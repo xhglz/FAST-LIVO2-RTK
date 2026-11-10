@@ -16,6 +16,7 @@ which is included as part of this source code package.
 #include "common_lib.h"
 #include <Eigen/Dense>
 #include <fstream>
+#include <functional>
 #include <math.h>
 #include <mutex>
 #include <omp.h>
@@ -191,7 +192,17 @@ public:
   VoxelMapConfig config_setting_;
   int current_frame_id_ = 0;
   ros::Publisher voxel_map_pub_;
+  std::string map_frame_ = "odom";
+  double measurement_time_ = 0.0;
   std::unordered_map<VOXEL_LOCATION, VoxelOctoTree *> voxel_map_;
+  std::unordered_map<VOXEL_LOCATION, VoxelOctoTree *> temporary_map_;
+  std::function<bool(const V3D&)> permanent_point_allowed_;
+  std::function<bool(const V3D&)> estimation_point_allowed_;
+  std::vector<unsigned char> estimation_mask_;
+  ~VoxelMapManager();
+  void replaceTemporaryMap(const std::vector<pointWithVar>& points);
+  void rebuildRoots(const std::vector<V3D>& removed, const std::vector<pointWithVar>& retained);
+  bool geometryConsistent(const V3D& point, double distance) const;
 
   PointCloudXYZI::Ptr feats_undistort_;
   PointCloudXYZI::Ptr feats_down_body_;
@@ -211,7 +222,12 @@ public:
   geometry_msgs::Quaternion geoQuat_;
 
   int feats_down_size_;
-  int effct_feat_num_;
+  int effct_feat_num_ = 0;
+  std::size_t lidar_match_count_ = 0;
+  double lidar_residual_rms_ = 0.0;
+  double lidar_normalized_rms_ = std::numeric_limits<double>::quiet_NaN();
+  double lidar_angular_coverage_ = 0.0;
+  Eigen::Matrix<double, 6, 6> lidar_information_ = Eigen::Matrix<double, 6, 6>::Zero();
   std::vector<M3D> cross_mat_list_;
   std::vector<M3D> body_cov_list_;
   std::vector<pointWithVar> pv_list_;

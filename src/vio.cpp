@@ -12,6 +12,26 @@ which is included as part of this source code package.
 
 #include "vio.h"
 
+void VIOManager::pruneNonStaticPoints()
+{
+  if (!static_point_allowed) return;
+  // Submap pointers refer into feat_map and must be dropped before deleting owners.
+  visual_submap->reset();
+  total_points = 0;
+  for (auto it = feat_map.begin(); it != feat_map.end();) {
+    auto& points = it->second->voxel_points;
+    for (auto p = points.begin(); p != points.end();) {
+      if (*p && !static_point_allowed((*p)->pos_)) {
+        delete *p;
+        p = points.erase(p);
+      } else ++p;
+    }
+    if (points.empty()) { delete it->second; it = feat_map.erase(it); }
+    else ++it;
+  }
+  std::fill(retrieve_voxel_points.begin(), retrieve_voxel_points.end(), nullptr);
+}
+
 VIOManager::VIOManager()
 {
   // downSizeFilter.setLeafSize(0.2, 0.2, 0.2);
@@ -808,6 +828,7 @@ void VIOManager::generateVisualMapPoints(cv::Mat img, vector<pointWithVar> &pg)
   // double t0 = omp_get_wtime();
   for (int i = 0; i < pg.size(); i++)
   {
+    if (static_point_allowed && !static_point_allowed(pg[i].point_w)) continue;
     if (pg[i].normal == V3D(0, 0, 0)) continue;
 
     V3D pt = pg[i].point_w;
@@ -834,6 +855,7 @@ void VIOManager::generateVisualMapPoints(cv::Mat img, vector<pointWithVar> &pg)
   for (int j = 0; j < visual_submap->add_from_voxel_map.size(); j++)
   {
     V3D pt = visual_submap->add_from_voxel_map[j].point_w;
+    if (static_point_allowed && !static_point_allowed(pt)) continue;
     V2D pc(new_frame_->w2c(pt));
 
     if (new_frame_->cam_->isInFrame(pc.cast<int>(), border)) // 20px is the patch size in the matcher
@@ -1051,7 +1073,8 @@ void VIOManager::updateReferencePatch(const unordered_map<VOXEL_LOCATION, VoxelO
       double cos_angle = pf.dot(norm_vec);
       // if(fabs(cos_angle) < 0.86) continue; // 20 degree
 
-      float ref_mean;
+      // Cached means must also initialize the values used below.
+      float ref_mean = ref_patch_temp->mean_;
       if (abs(ref_patch_temp->mean_) < 1e-6)
       {
         float ref_sum = std::accumulate(patch_temp, patch_temp + patch_size_total, 0.0);
@@ -1064,7 +1087,7 @@ void VIOManager::updateReferencePatch(const unordered_map<VOXEL_LOCATION, VoxelO
         if ((*itm)->id_ == ref_patch_temp->id_) continue;
         float *patch_cache = (*itm)->patch_;
 
-        float other_mean;
+        float other_mean = (*itm)->mean_;
         if (abs((*itm)->mean_) < 1e-6)
         {
           float other_sum = std::accumulate(patch_cache, patch_cache + patch_size_total, 0.0);

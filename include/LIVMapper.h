@@ -19,9 +19,13 @@ which is included as part of this source code package.
 #include <cv_bridge/cv_bridge.h>
 #include <image_transport/image_transport.h>
 #include <nav_msgs/Path.h>
-#include <vikit/camera_loader.h>
 #include <gnss_comm/GnssPVTSolnMsg.h>     
 #include <GeographicLib/LocalCartesian.hpp>
+#include <tf/transform_broadcaster.h>
+#include "backend_events.h"
+#include "health_monitor.h"
+#include "dynamic_filter.h"
+#include <diagnostic_msgs/DiagnosticArray.h>
 
 class LIVMapper
 {
@@ -54,6 +58,22 @@ public:
   void img_cbk(const sensor_msgs::ImageConstPtr &msg_in);
   void rtk_cbk(const gnss_comm::GnssPVTSolnMsg::ConstPtr& gpsMsg);
   void InitializeRTK();
+  void setBackendCallbacks(backend::KeyframeCallback keyframes, backend::GnssCallback gnss);
+  void submitKeyframe(const PointCloudXYZRGB::ConstPtr& cloud);
+  void publishFrameTransforms(double measurement_time);
+  bool checkInput(health::Sensor sensor, double time, bool finite, bool saturated = false);
+  void diagnosticsCallback(const ros::WallTimerEvent& event);
+  void collectFrontendQuality();
+  bool dynamicPoseReliable(const StatesGroup& state) const;
+  void updateDynamicMap(double time);
+  dynamic_filter::Config dynamic_config;
+  std::unique_ptr<dynamic_filter::Filter> dynamic_filter_engine;
+  std::vector<dynamic_filter::State> dynamic_mask;
+  std::ofstream dynamic_quality_file;
+  std::ofstream dynamic_removal_file;
+  std::set<dynamic_filter::Key> pending_map_removals;
+  bool dynamic_map_write_allowed = false;
+  void recordGnssDiagnostic(const backend::GnssEvent& event, bool forwarded);
   void publish_img_rgb(const image_transport::Publisher &pubImage, VIOManagerPtr vio_manager);
   void publish_frame_world(const ros::Publisher &pubLaserCloudFullRes, VIOManagerPtr vio_manager);
   void publish_visual_sub_map(const ros::Publisher &pubSubVisualMap);
@@ -164,6 +184,30 @@ public:
   VoxelMapManagerPtr voxelmap_manager;
   VIOManagerPtr vio_manager;
   GeographicLib::LocalCartesian gps_trans_;
+  backend::Frames frames;
+  backend::KeyframeCallback keyframe_callback;
+  backend::GnssCallback gnss_callback;
+  tf::TransformBroadcaster frame_broadcaster;
+  std::uint64_t keyframe_sequence = 0;
+  std::uint64_t gnss_sequence = 0;
+  bool gnss_origin_initialized = false;
+  bool gps_enabled = false;
+  double gps_time_offset = 0.0;
+  double gps_leap_seconds = 18.0;
+  double last_gnss_measurement_time = -1.0;
+  std::string gps_topic;
+  health::InputMonitor input_monitor;
+  health::GnssMonitor gnss_monitor;
+  health::FrontendMonitor frontend_monitor;
+  backend::Quality last_quality;
+  bool enforce_input_quality = false, enforce_gnss_fix = false, enforce_frontend = false;
+  bool lio_update_allowed = true, visual_update_allowed = true;
+  bool diagnostics_log_en = true;
+  double imu_acc_limit = 150.0, imu_gyro_limit = 33.0, imu_acc_unit_scale = 1.0;
+  double last_diagnostic_time = -1.0;
+  ros::Publisher diagnostics_pub;
+  ros::WallTimer diagnostics_timer;
+  ofstream diagnostics_file, frontend_quality_file, gnss_quality_file;
 
   ros::Publisher plane_pub;
   ros::Publisher voxel_pub;

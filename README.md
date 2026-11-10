@@ -90,6 +90,36 @@ roslaunch fast_livo HH.launch
 ```bash
 rosbag play HH-LVGO-01.bag
 ```
+
+### Data Interface Contract
+
+The frontend now submits atomic keyframe and GNSS events directly to the backend.
+`/synced_cloud` is in `imu_link`, while local poses and registered clouds use `odom`.
+Original local IMU poses are retained separately from optimized global IMU poses.
+`gps/gps_en=false` disables GNSS input without enabling or changing local RTK fusion.
+RViz defaults to `odom`; no identity `map -> odom` transform is assumed.
+
+See [the frame, time and replay contract](doc/data_contract.md) for parameter directions,
+output migration, diagnostic exports and regression-test commands.
+
+Input, GNSS and frontend health diagnostics are available on `/diagnostics`.
+See [health diagnostics and fault injection](doc/health_diagnostics.md) for thresholds,
+noise floors, CSV metrics and replay checks. `config/health.yaml` defaults to advisory
+mode; trusted FIX and update rejection gates must be enabled explicitly.
+
+An independent [iSAM2 online backend](doc/online_backend.md) is now available.
+`HH.launch` and `AGV.launch` default to `backend_mode:=online`; use
+`backend_mode:=batch` for the preserved Enter-triggered offline comparison.
+Online GNSS constraints always require trusted FIX, regardless of input advisory mode.
+The backend publishes `map -> odom`, `/odometry/global`, `/path/global` and a cached
+optimized keyframe map on `/map/global`, without feeding global corrections into
+local frontend state. A pre-existing uninitialized visual patch mean read was fixed
+in both modes; numerical regression uses a freshly generated, corrected batch baseline.
+Opt-in [geometric dynamic filtering](doc/dynamic_filter.md) now shares confidence
+gates across LIO, permanent/temporary maps, visual patches and colored keyframes.
+Enable it with `dynamic_filter:=true`; it defaults off pending real dynamic-scene
+validation. Semantic detection and automatic relocalization are not included.
+
 ## 3. Appendix
 **Time Synchronization:**
 

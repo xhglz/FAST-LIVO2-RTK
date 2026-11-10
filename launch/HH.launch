@@ -3,13 +3,28 @@
 
 	<arg name="rviz" default="true" />
 	<arg name="outputfilepath" default="$(find fast_livo)/output" />
+	<arg name="backend_mode" default="online" />
+	<arg name="dynamic_filter" default="false" />
+	<arg name="play_bag" default="true" />
+	<arg name="bag_file" default="/root/datasets/HH-LVGO-01_compressed.bag" />
+	<arg name="bag_rate" default="1.0" />
+	<arg name="bag_delay" default="3.0" />
 
 	<rosparam command="load" file="$(find fast_livo)/config/HH-LVGO.yaml" />
+	<rosparam command="load" file="$(find fast_livo)/config/health.yaml" />
+	<rosparam command="load" file="$(find fast_livo)/config/online_backend.yaml" />
+	<rosparam command="load" file="$(find fast_livo)/config/dynamic_filter.yaml" />
+	<param name="dynamic_filter/enabled" value="$(arg dynamic_filter)" />
+	<param name="backend/mode" value="$(arg backend_mode)" />
+	<param name="/use_sim_time" value="$(arg play_bag)" />
+
+	<node if="$(arg play_bag)" pkg="rosbag" type="play" name="bag_play"
+		args="--clock --delay=$(arg bag_delay) --rate=$(arg bag_rate) '$(arg bag_file)'"
+		output="screen" />
 
 	<node pkg="fast_livo" type="fastlivo_mapping" name="laserMapping" output="screen">
 		<rosparam file="$(find fast_livo)/config/camera_HH-LVGO-01.yaml" />
 		<param name="outputfilepath" value="$(arg outputfilepath)" />
-	
 	</node>
 	
 	<group if="$(arg rviz)">

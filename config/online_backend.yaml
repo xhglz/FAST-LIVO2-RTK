@@ -1,0 +1,34 @@
+# The frontend remains local. Only the backend estimates map -> odom.
+backend:
+  mode: online
+  online:
+    keyframe_distance: 0.5
+    keyframe_rotation: 0.15
+    keyframe_max_time: 0.5
+    keyframe_min_time: 0.05
+    init_min_pairs: 10
+    init_baseline: 5.0
+    init_min_duration: 2.0
+    init_max_rms: 0.5
+    init_min_correlation: 0.8
+    gravity_tolerance: 0.08726646
+    association_max_gap: 1.0
+    pending_max_lag: 2.0
+    odom_rotation_sigma: 0.01
+    odom_position_sigma: 0.1
+    prior_tilt_sigma: 0.02
+    prior_yaw_sigma: 0.5
+    prior_position_sigma: 1.0
+    interpolation_sigma_per_second: 0.2
+    innovation_sigma: 0.5
+    innovation_chi2: 16.27
+    innovation_max_distance: 5.0
+    gnss_timeout: 1.0
+    map_period: 5.0
+    map_leaf: 0.25
+    max_queue: 200
+    max_pending_gnss: 300
+    max_init_frames: 500
+    cloud_cache: 100
+    cloud_max_points: 20000
+    map_max_points: 300000

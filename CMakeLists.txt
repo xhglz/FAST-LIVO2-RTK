@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 2.8.3)
+cmake_minimum_required(VERSION 3.10)
 project(fast_livo)
 
 set(CMAKE_BUILD_TYPE "Release")
@@ -77,6 +77,7 @@ endif()
 
 # Find catkin and required dependencies
 find_package(catkin REQUIRED COMPONENTS
+  diagnostic_msgs
   geometry_msgs
   gnss_comm
   nav_msgs
@@ -110,7 +111,7 @@ set(Sophus_LIBRARIES libSophus.so)
 
 # Define the catkin package
 catkin_package(
-  CATKIN_DEPENDS geometry_msgs gnss_comm nav_msgs roscpp rospy sensor_msgs std_msgs tf message_runtime cv_bridge eigen_conversions vikit_common vikit_ros image_transport
+  CATKIN_DEPENDS diagnostic_msgs geometry_msgs gnss_comm nav_msgs roscpp rospy sensor_msgs std_msgs tf message_runtime cv_bridge eigen_conversions vikit_common vikit_ros image_transport
   DEPENDS EIGEN3 PCL OpenCV Sophus
 )
 
@@ -131,14 +132,22 @@ add_library(vio src/vio.cpp src/frame.cpp src/visual_point.cpp)
 add_library(lio src/voxel_map.cpp)
 add_library(pre src/preprocess.cpp)
 add_library(imu_proc src/IMU_Processing.cpp)
-add_library(laser_mapping src/LIVMapper.cpp)
+add_library(health_monitor src/health_monitor.cpp)
+add_library(dynamic_filter src/dynamic_filter.cpp)
+target_link_libraries(dynamic_filter ${catkin_LIBRARIES})
+add_library(laser_mapping src/LIVMapper.cpp src/mapper_diagnostics.cpp src/mapper_dynamic.cpp)
 add_library(optimization src/optimization.cpp)
+add_library(online_backend src/online_backend.cpp src/online_backend_ros.cpp)
+add_dependencies(online_backend ${catkin_EXPORTED_TARGETS})
+target_link_libraries(online_backend health_monitor gtsam ${catkin_LIBRARIES}
+  ${PCL_LIBRARIES} ${GeographicLib_LIBRARIES})
 
 # Add the main executable
 add_executable(fastlivo_mapping src/main.cpp)
 
 add_dependencies(laser_mapping ${catkin_EXPORTED_TARGETS})
 add_dependencies(optimization ${catkin_EXPORTED_TARGETS})
+add_dependencies(health_monitor ${catkin_EXPORTED_TARGETS})
 add_dependencies(fastlivo_mapping ${catkin_EXPORTED_TARGETS})
 
 # Link libraries to the executable
@@ -149,6 +158,9 @@ target_link_libraries(fastlivo_mapping
   pre
   imu_proc
   optimization
+  online_backend
+  health_monitor
+  dynamic_filter
   ${catkin_LIBRARIES}
   ${PCL_LIBRARIES}
   ${OpenCV_LIBRARIES}
@@ -161,4 +173,59 @@ target_link_libraries(fastlivo_mapping
 # Link mimalloc if found
 if(mimalloc_FOUND)
   target_link_libraries(fastlivo_mapping mimalloc)
+endif()
+
+# Finite-value checks must not be removed by the ARM release fast-math flags.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  target_compile_options(health_monitor PRIVATE -fno-fast-math)
+  target_compile_options(laser_mapping PRIVATE -fno-fast-math)
+  target_compile_options(optimization PRIVATE -fno-fast-math)
+  target_compile_options(online_backend PRIVATE -fno-fast-math)
+  target_compile_options(dynamic_filter PRIVATE -fno-fast-math)
+endif()
+
+if(CATKIN_ENABLE_TESTING)
+  catkin_add_gtest(dynamic_filter_test test/dynamic_filter_test.cpp)
+  if(TARGET dynamic_filter_test)
+    add_dependencies(dynamic_filter_test ${catkin_EXPORTED_TARGETS})
+    target_link_libraries(dynamic_filter_test dynamic_filter vio lio
+      ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenCV_LIBRARIES} ${Sophus_LIBRARIES})
+    if(OpenMP_CXX_FOUND)
+      target_link_libraries(dynamic_filter_test OpenMP::OpenMP_CXX)
+    endif()
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+      target_compile_options(dynamic_filter_test PRIVATE -fno-fast-math)
+    endif()
+  endif()
+  catkin_add_gtest(backend_events_test test/backend_events_test.cpp)
+  if(TARGET backend_events_test)
+    add_dependencies(backend_events_test ${catkin_EXPORTED_TARGETS})
+    target_link_libraries(backend_events_test
+      lio optimization health_monitor gtsam ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${GeographicLib_LIBRARIES})
+    if(OpenMP_CXX_FOUND)
+      target_link_libraries(backend_events_test OpenMP::OpenMP_CXX)
+    endif()
+  endif()
+  catkin_add_gtest(health_monitor_test test/health_monitor_test.cpp)
+  if(TARGET health_monitor_test)
+    add_dependencies(health_monitor_test ${catkin_EXPORTED_TARGETS})
+    target_link_libraries(health_monitor_test health_monitor ${catkin_LIBRARIES} ${GeographicLib_LIBRARIES})
+  endif()
+  catkin_add_gtest(vio_reference_test test/vio_reference_test.cpp)
+  if(TARGET vio_reference_test)
+    add_dependencies(vio_reference_test ${catkin_EXPORTED_TARGETS})
+    target_link_libraries(vio_reference_test vio lio health_monitor
+      ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenCV_LIBRARIES} ${Sophus_LIBRARIES})
+    if(OpenMP_CXX_FOUND)
+      target_link_libraries(vio_reference_test OpenMP::OpenMP_CXX)
+    endif()
+  endif()
+  catkin_add_gtest(online_backend_test test/online_backend_test.cpp)
+  if(TARGET online_backend_test)
+    add_dependencies(online_backend_test ${catkin_EXPORTED_TARGETS})
+    target_link_libraries(online_backend_test online_backend)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+      target_compile_options(online_backend_test PRIVATE -fno-fast-math)
+    endif()
+  endif()
 endif()

@@ -19,9 +19,6 @@
 #include <tf/transform_datatypes.h>
 #include <tf/transform_broadcaster.h>
 
-#include <message_filters/subscriber.h>
-#include <message_filters/synchronizer.h>
-#include <message_filters/sync_policies/approximate_time.h>
 #include <gnss_comm/GnssPVTSolnMsg.h>
 
 #include <GeographicLib/LocalCartesian.hpp> 
@@ -36,9 +33,16 @@ struct KeyFrame
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
     double time = 0.0;
+    std::uint64_t sequence = 0;
+    std::string pose_frame = "odom";
+    std::string body_frame = "imu_link";
+    // Original T_odom_imu is never replaced by alignment or optimization.
     gtsam::Pose3 pose = gtsam::Pose3::Identity();
+    gtsam::Pose3 optimized_pose = gtsam::Pose3::Identity();
+    bool has_optimized_pose = false;
     Eigen::Vector3d velocity = Eigen::Vector3d::Zero();
-    PointCloudXYZRGB::Ptr cloud;
+    PointCloudXYZRGB::ConstPtr cloud;
+    backend::Quality quality;
 };
 
 using KeyFrameVector = std::vector<KeyFrame, Eigen::aligned_allocator<KeyFrame>>;
@@ -88,7 +92,7 @@ public:
 
     void loadData(const std::string& data_dir);
     void offlineOptimizationTask();
-    void initialAlign();
+    bool initialAlign();
     double calculateDtwTimeOffset(const std::vector<std::vector<double>>& gpsdata, const std::vector<std::vector<double>>& slamdata);
     double estimateVelocityTimeOffset(const std::vector<std::vector<double>>& gps_position_data,
                                       const std::vector<std::vector<double>>& slam_position_data,
@@ -101,19 +105,15 @@ public:
                                       std::string& velocity_source);
     void buildBatchGraph();
     void waitForKeyFrameIdle(double idle_seconds);
-    void saveKeyFrameAndFactor(const gtsam::Pose3& pose,
-                               double time,
-                               const Eigen::Vector3d& velocity,
-                               const PointCloudXYZRGB::Ptr& cloud);
-    void syncedCallback(const nav_msgs::Odometry::ConstPtr& odomMsg, const sensor_msgs::PointCloud2::ConstPtr& cloudMsg);
-    void gpsHandler(const gnss_comm::GnssPVTSolnMsg::ConstPtr& pvtMsg);
-    // void gpsHandler(const sensor_msgs::NavSatFixConstPtr& gpsMsg);
+    void onKeyframe(const backend::KeyframeEvent& event);
+    void onGnss(const backend::GnssEvent& event);
 
     void saveOptimizedGlobalMap();
     void savekeyframescan();
-    void writeTumTrajectory(const std::string& path);
+    void writeTumTrajectory(const std::string& path, bool optimized = false);
     void writeOptimizedTumTrajectory();
     void writeRtkTumTrajectory();
+    void writeInputEvents();
     
     template<typename T>
     void publishCloud(const ros::Publisher& pub, const T& cloud, const ros::Time& stamp, const std::string& frame_id)
@@ -126,14 +126,7 @@ public:
     }
 
 public:
-    ros::Subscriber subGPS;
-    ros::Subscriber subGPS_pvt;
-
     ros::Publisher pubGpsOdom;
-
-    message_filters::Subscriber<nav_msgs::Odometry> subOdom_;
-    message_filters::Subscriber<sensor_msgs::PointCloud2> subCloud_;
-    typedef message_filters::sync_policies::ApproximateTime<nav_msgs::Odometry, sensor_msgs::PointCloud2> SyncPolicy;
 
 
     gtsam::NonlinearFactorGraph gtSAMgraph; 
@@ -145,6 +138,11 @@ public:
 
 
     KeyFrameVector keyFrames;
+    std::vector<backend::GnssEvent, Eigen::aligned_allocator<backend::GnssEvent>> gnss_events;
+    backend::Frames frames;
+    gtsam::Pose3 T_map_odom = gtsam::Pose3::Identity();
+    bool alignment_ready = false;
+    std::vector<bool> gps_association_valid;
 
     std::thread optimization_thread_;
     std::atomic_bool optimization_shutdown_requested_{false};
@@ -153,7 +151,7 @@ public:
     std::deque<nav_msgs::Odometry> gpsQueue_B;
     GeographicLib::LocalCartesian gps_trans_;
 
-    float gpstimestamp = 0.0;
+    double gpstimestamp = 0.0;
     double timeLaserInfoCur;
     ros::Time timeLaserInoStamp;
 
@@ -171,7 +169,10 @@ public:
     bool save_pcd_enable_ = false;
     bool is_optimized = false;
     bool gps_en;
+    bool gnss_fix_enforced = false;
+    health::GnssConfig gnss_noise_config;
     bool accepting_keyframes_ = true;
+    bool accepting_gnss_ = true;
     ros::WallTime last_keyframe_wall_time_;
 
     string gps_topic;
@@ -188,5 +189,4 @@ public:
 
 private:
     std::mutex mutex;
-    std::unique_ptr<message_filters::Synchronizer<SyncPolicy>> sync_;
 };

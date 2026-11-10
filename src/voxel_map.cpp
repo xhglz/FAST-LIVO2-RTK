@@ -11,6 +11,77 @@ which is included as part of this source code package.
 */
 
 #include "voxel_map.h"
+#include <set>
+#include <unordered_set>
+
+namespace {
+int directionBin(const V3D& point)
+{
+  const double pi = 3.14159265358979323846;
+  const double azimuth = std::atan2(point.y(), point.x());
+  const double elevation = std::atan2(point.z(), std::hypot(point.x(), point.y()));
+  const int a = std::min(23, std::max(0, static_cast<int>((azimuth + pi) * 24 / (2 * pi))));
+  const int e = std::min(7, std::max(0, static_cast<int>((elevation + pi / 2) * 8 / pi)));
+  return e * 24 + a;
+}
+VOXEL_LOCATION rootLocation(const V3D& p, double size)
+{
+  // Keep the existing map's negative-coordinate convention for root rebuilds.
+  float xyz[3];
+  for (int i = 0; i < 3; ++i) {
+    xyz[i] = p[i] / size;
+    if (xyz[i] < 0) xyz[i] -= 1.0;
+  }
+  return VOXEL_LOCATION(static_cast<int64_t>(xyz[0]), static_cast<int64_t>(xyz[1]),
+                        static_cast<int64_t>(xyz[2]));
+}
+} // namespace
+
+VoxelMapManager::~VoxelMapManager()
+{
+  for (auto& entry : temporary_map_) delete entry.second;
+}
+
+void VoxelMapManager::replaceTemporaryMap(const std::vector<pointWithVar>& points)
+{
+  for (auto& entry : temporary_map_) delete entry.second;
+  temporary_map_.clear();
+  std::unordered_map<VOXEL_LOCATION, VoxelOctoTree*> empty;
+  VoxelMapManager builder(config_setting_, empty);
+  builder.UpdateVoxelMap(points);
+  for (auto& entry : builder.voxel_map_) entry.second->init_octo_tree();
+  temporary_map_.swap(builder.voxel_map_);
+}
+
+void VoxelMapManager::rebuildRoots(const std::vector<V3D>& removed,
+                                 const std::vector<pointWithVar>& retained)
+{
+  std::unordered_set<VOXEL_LOCATION> roots;
+  for (const auto& p : removed) roots.insert(rootLocation(p, config_setting_.max_voxel_size_));
+  for (const auto& root : roots) {
+    auto it = voxel_map_.find(root);
+    if (it != voxel_map_.end()) { delete it->second; voxel_map_.erase(it); }
+  }
+  std::vector<pointWithVar> rebuild;
+  for (const auto& p : retained)
+    if (roots.count(rootLocation(p.point_w, config_setting_.max_voxel_size_))) rebuild.push_back(p);
+  UpdateVoxelMap(rebuild);
+  for (const auto& root : roots) {
+    auto it = voxel_map_.find(root);
+    if (it != voxel_map_.end()) it->second->init_octo_tree();
+  }
+}
+
+bool VoxelMapManager::geometryConsistent(const V3D& point, double distance) const
+{
+  auto it = voxel_map_.find(rootLocation(point, config_setting_.max_voxel_size_));
+  if (it == voxel_map_.end()) return false;
+  const auto* plane = it->second->find_correspond(point)->plane_ptr_;
+  if (!plane->is_plane_) return false;
+  const double residual = plane->normal_.dot(point) + plane->d_;
+  const double radial = std::max(0.0, (point - plane->center_).squaredNorm() - residual * residual);
+  return std::abs(residual) <= distance && radial <= 9.0 * plane->radius_ * plane->radius_;
+}
 
 void calcBodyCov(Eigen::Vector3d &pb, const float range_inc, const float degree_inc, Eigen::Matrix3d &cov)
 {
@@ -337,6 +408,14 @@ VoxelOctoTree *VoxelOctoTree::Insert(const pointWithVar &pv)
 
 void VoxelMapManager::StateEstimation(StatesGroup &state_propagat, bool rtk_good, V3D rtk_means)
 {
+  lidar_match_count_ = 0;
+  lidar_residual_rms_ = 0.0;
+  lidar_information_.setZero();
+  lidar_normalized_rms_ = std::numeric_limits<double>::quiet_NaN();
+  lidar_angular_coverage_ = 0.0;
+  std::set<int> candidate_bins;
+  for (const auto& point : *feats_down_body_)
+    candidate_bins.insert(directionBin(V3D(point.x, point.y, point.z)));
   cross_mat_list_.clear();
   cross_mat_list_.reserve(feats_down_size_);
   body_cov_list_.clear();
@@ -401,6 +480,15 @@ void VoxelMapManager::StateEstimation(StatesGroup &state_propagat, bool rtk_good
       total_residual += fabs(ptpl_list_[i].dis_to_plane_);
     }
     effct_feat_num_ = ptpl_list_.size();
+    const int lidar_rows = effct_feat_num_;
+    lidar_match_count_ = ptpl_list_.size();
+    double residual_squared = 0.0;
+    for (const auto& match : ptpl_list_) residual_squared += match.dis_to_plane_ * match.dis_to_plane_;
+    lidar_residual_rms_ = lidar_rows > 0 ? std::sqrt(residual_squared / lidar_rows) : 0.0;
+    std::set<int> matched_bins;
+    for (const auto& match : ptpl_list_) matched_bins.insert(directionBin(match.point_b_));
+    lidar_angular_coverage_ = candidate_bins.empty() ? 0.0 :
+        static_cast<double>(matched_bins.size()) / candidate_bins.size();
     // cout << "[ LIO ] Raw feature num: " << feats_undistort_->size() << ", downsampled feature num:" << feats_down_size_ 
     //      << " effective feature num: " << effct_feat_num_ << " average residual: " << total_residual / effct_feat_num_ << endl;
 
@@ -416,7 +504,8 @@ void VoxelMapManager::StateEstimation(StatesGroup &state_propagat, bool rtk_good
     VectorXd R_inv(effct_feat_num_);
     VectorXd meas_vec(effct_feat_num_);
     meas_vec.setZero();
-    for (int i = 0; i < effct_feat_num_; i++)
+    // RTK rows are appended separately and must never index the LiDAR match list.
+    for (int i = 0; i < lidar_rows; i++)
     {
       auto &ptpl = ptpl_list_[i];
       V3D point_this(ptpl.point_b_);
@@ -461,6 +550,10 @@ void VoxelMapManager::StateEstimation(StatesGroup &state_propagat, bool rtk_good
           ptpl_list_[i].normal_[1] * R_inv(i), ptpl_list_[i].normal_[2] * R_inv(i);
       meas_vec(i) = -ptpl_list_[i].dis_to_plane_;
     }
+    lidar_information_ = Hsub_T_R_inv.leftCols(lidar_rows) * Hsub.topRows(lidar_rows);
+    if (lidar_rows > 0)
+      lidar_normalized_rms_ = std::sqrt((R_inv.head(lidar_rows).array() *
+          meas_vec.head(lidar_rows).array().square()).sum() / lidar_rows);
 
     if (rtk_good)
     {
@@ -598,6 +691,7 @@ void VoxelMapManager::BuildVoxelMap()
   {
     pointWithVar pv;
     pv.point_w << feats_down_world_->points[i].x, feats_down_world_->points[i].y, feats_down_world_->points[i].z;
+    if (permanent_point_allowed_ && !permanent_point_allowed_(pv.point_w)) continue;
     V3D point_this(feats_down_body_->points[i].x, feats_down_body_->points[i].y, feats_down_body_->points[i].z);
     M3D var;
     calcBodyCov(point_this, config_setting_.dept_err_, config_setting_.beam_err_, var);
@@ -613,6 +707,7 @@ void VoxelMapManager::BuildVoxelMap()
   for (uint i = 0; i < plsize; i++)
   {
     const pointWithVar p_v = input_points[i];
+    if (permanent_point_allowed_ && !permanent_point_allowed_(p_v.point_w)) continue;
     float loc_xyz[3];
     for (int j = 0; j < 3; j++)
     {
@@ -672,6 +767,7 @@ void VoxelMapManager::UpdateVoxelMap(const std::vector<pointWithVar> &input_poin
   for (uint i = 0; i < plsize; i++)
   {
     const pointWithVar p_v = input_points[i];
+    if (permanent_point_allowed_ && !permanent_point_allowed_(p_v.point_w)) continue;
     float loc_xyz[3];
     for (int j = 0; j < 3; j++)
     {
@@ -717,6 +813,8 @@ void VoxelMapManager::BuildResidualListOMP(std::vector<pointWithVar> &pv_list, s
   for (int i = 0; i < index.size(); i++)
   {
     pointWithVar &pv = pv_list[i];
+    if ((!estimation_mask_.empty() && (static_cast<std::size_t>(i) >= estimation_mask_.size() || !estimation_mask_[i])) ||
+        (estimation_point_allowed_ && !estimation_point_allowed_(pv.point_w))) continue;
     float loc_xyz[3];
     for (int j = 0; j < 3; j++)
     {
@@ -725,6 +823,7 @@ void VoxelMapManager::BuildResidualListOMP(std::vector<pointWithVar> &pv_list, s
     }
     VOXEL_LOCATION position((int64_t)loc_xyz[0], (int64_t)loc_xyz[1], (int64_t)loc_xyz[2]);
     auto iter = voxel_map_.find(position);
+    bool matched = false;
     if (iter != voxel_map_.end())
     {
       VoxelOctoTree *current_octo = iter->second;
@@ -749,6 +848,7 @@ void VoxelMapManager::BuildResidualListOMP(std::vector<pointWithVar> &pv_list, s
         mylock.lock();
         useful_ptpl[i] = true;
         all_ptpl_list[i] = single_ptpl;
+        matched = true;
         mylock.unlock();
       }
       else
@@ -756,6 +856,20 @@ void VoxelMapManager::BuildResidualListOMP(std::vector<pointWithVar> &pv_list, s
         mylock.lock();
         useful_ptpl[i] = false;
         mylock.unlock();
+      }
+    }
+    if (!matched) {
+      auto temporary = temporary_map_.find(position);
+      if (temporary != temporary_map_.end()) {
+        PointToPlane single;
+        bool success = false;
+        double prob = 0.0;
+        build_single_residual(pv, temporary->second, 0, success, prob, single);
+        if (success) {
+          std::lock_guard<std::mutex> lock(mylock);
+          useful_ptpl[i] = true;
+          all_ptpl_list[i] = single;
+        }
       }
     }
   }
@@ -893,8 +1007,8 @@ void VoxelMapManager::pubSinglePlane(visualization_msgs::MarkerArray &plane_pub,
                                      const float alpha, const Eigen::Vector3d rgb)
 {
   visualization_msgs::Marker plane;
-  plane.header.frame_id = "camera_init";
-  plane.header.stamp = ros::Time();
+  plane.header.frame_id = map_frame_;
+  plane.header.stamp = ros::Time(measurement_time_);
   plane.ns = plane_ns;
   plane.id = single_plane.id_;
   plane.type = visualization_msgs::Marker::CYLINDER;

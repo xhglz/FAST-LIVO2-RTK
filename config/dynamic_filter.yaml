@@ -1,0 +1,27 @@
+# Opt-in until dynamic-scene and localization regressions have been measured.
+dynamic_filter:
+  enabled: false
+  cell_size: 0.3
+  consistency_distance: 0.15
+  confirmation_frames: 6
+  confirmation_time: 0.8
+  free_frames: 6
+  temporary_ttl: 1.0
+  dynamic_hold: 1.0
+  motion_frames: 3
+  track_distance: 1.5
+  min_speed: 0.3
+  max_speed: 15.0
+  cluster_min_cells: 4
+  cluster_max_cells: 250
+  cluster_max_extent: 5.0
+  max_range: 60.0
+  max_position_sigma: 0.5
+  max_rotation_sigma: 0.1
+  bootstrap_position_sigma: 1.0
+  bootstrap_rotation_sigma: 0.2
+  max_correction: 0.25
+  max_cells: 60000
+  samples_per_cell: 12
+  max_rays: 4000
+  max_temporary_points: 20000

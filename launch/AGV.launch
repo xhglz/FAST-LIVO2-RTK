@@ -3,8 +3,15 @@
 
 	<arg name="rviz" default="true" />
 	<arg name="outputfilepath" default="$(find fast_livo)/output" />
+	<arg name="backend_mode" default="online" />
+	<arg name="dynamic_filter" default="false" />
 
 	<rosparam command="load" file="$(find fast_livo)/config/AGV-LVGO.yaml" />
+	<rosparam command="load" file="$(find fast_livo)/config/health.yaml" />
+	<rosparam command="load" file="$(find fast_livo)/config/online_backend.yaml" />
+	<rosparam command="load" file="$(find fast_livo)/config/dynamic_filter.yaml" />
+	<param name="dynamic_filter/enabled" value="$(arg dynamic_filter)" />
+	<param name="backend/mode" value="$(arg backend_mode)" />
 
 	<node pkg="fast_livo" type="fastlivo_mapping" name="laserMapping" output="screen">
 		<rosparam file="$(find fast_livo)/config/camera_AGV-LVGO-02.yaml" />

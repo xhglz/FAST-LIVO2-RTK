@@ -1,0 +1,51 @@
+# Start with diagnostics only. Enable each gate after reviewing recorded evidence.
+health:
+  enforce_input_quality: false
+  enforce_gnss_fix: false
+  enforce_frontend: false
+  log_en: true
+  publish_period: 0.2
+  startup_grace: 2.0
+  fault_hold: 0.25
+  bad_frames: 3
+  good_frames: 5
+
+  # Per-axis limits: acceleration in m/s^2 after unit scaling, gyro in rad/s.
+  imu_acc_unit_scale: 1.0  # Use 9.80665 if the driver reports acceleration in g.
+  imu_acc_limit: 150.0
+  imu_gyro_limit: 33.0
+
+  input:
+    imu: {max_gap: 0.10, max_age: 0.5, future_tolerance: 0.2, max_queue: 2000, max_queue_age: 1.0}
+    lidar: {max_gap: 0.5, max_age: 0.5, future_tolerance: 0.2, max_queue: 50, max_queue_age: 1.0}
+    camera: {max_gap: 0.5, max_age: 0.5, future_tolerance: 0.2, max_queue: 50, max_queue_age: 1.0}
+    gnss: {max_gap: 1.0, max_age: 0.5, future_tolerance: 0.2, max_queue: 100, max_queue_age: 1.0}
+
+  gnss:
+    min_satellites: 12
+    acquire_frames: 5
+    max_h_accuracy: 0.15
+    max_v_accuracy: 0.30
+    max_age: 0.5
+    future_tolerance: 0.2
+    sigma_xy_floor: 0.05
+    sigma_z_floor: 0.10
+    h_accuracy_scale: 1.0
+    v_accuracy_scale: 1.0
+    jump_min: 2.0
+    jump_sigma: 6.0
+    motion_sigma_per_second: 2.0
+    continuity_timeout: 3.0
+    max_interpolation_gap: 1.0
+
+  frontend:
+    warmup_frames: 20
+    min_matches: 30
+    min_match_ratio: 0.05
+    min_coverage: 0.10
+    max_normalized_rms: 5.0
+    rotation_scale: 0.1
+    translation_scale: 1.0
+    min_eigen_ratio: 0.000001
+    max_translation_correction: 1.0
+    max_rotation_correction: 0.2

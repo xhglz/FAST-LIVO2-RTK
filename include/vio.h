@@ -83,6 +83,8 @@ public:
 class VIOManager
 {
 public:
+  std::function<bool(const V3D&)> static_point_allowed;
+  void pruneNonStaticPoints();
   int grid_size;
   vk::AbstractCamera *cam;
   vk::PinholeCamera *pinhole_cam;

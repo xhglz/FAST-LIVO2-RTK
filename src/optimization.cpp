@@ -43,6 +43,23 @@ void ensureDirectory(const std::string& path)
     }
 }
 
+nav_msgs::Odometry gnssToOdometry(const backend::GnssEvent& event)
+{
+    nav_msgs::Odometry sample;
+    sample.header.stamp.fromSec(event.measurement_time);
+    sample.header.frame_id = event.position_frame;
+    sample.child_frame_id = event.body_frame;
+    sample.pose.pose.orientation.w = 1.0;
+    sample.pose.pose.position.x = event.position_enu.x();
+    sample.pose.pose.position.y = event.position_enu.y();
+    sample.pose.pose.position.z = event.position_enu.z();
+    sample.twist.twist.linear.x = event.velocity_enu.x();
+    sample.twist.twist.linear.y = event.velocity_enu.y();
+    sample.twist.twist.linear.z = event.velocity_enu.z();
+    for (int i = 0; i < 3; ++i) sample.pose.covariance[i * 7] = event.position_variance[i];
+    return sample;
+}
+
 bool interpolateLinear(const VelocitySeries& series, double t, double& value)
 {
     if (series.times.size() < 2 || t < series.times.front() || t > series.times.back()) {
@@ -353,26 +370,27 @@ optimization::optimization(ros::NodeHandle &nh)
     nh.param<string>("gps/gps_topic", gps_topic, "/ublox_driver/receiver_lla");
     nh.param<double>("gps/gps_time_offset", gps_offset, 0.0);
     nh.param<bool>("gps/gps_en", gps_en, false);
-    nh.param<vector<double>>("gps/extrinsic_T", gps_extrinT, vector<double>());
+    nh.param<bool>("health/enforce_gnss_fix", gnss_fix_enforced, false);
+    health::loadGnssConfig(nh, gnss_noise_config);
+    nh.param<vector<double>>("gps/extrinsic_T", gps_extrinT, vector<double>(3, 0.0));
+    nh.param<std::string>("frames/map", frames.map, frames.map);
+    nh.param<std::string>("frames/odom", frames.odom, frames.odom);
+    nh.param<std::string>("frames/imu", frames.imu, frames.imu);
+    nh.param<std::string>("frames/gnss", frames.gnss, frames.gnss);
+    if (gps_extrinT.size() != 3) {
+        throw std::invalid_argument("gps/extrinsic_T must contain three IMU-frame lever-arm values");
+    }
 
     nh.param<bool>("opt/debug_mode", debug_mode, false);
     nh.param<double>("opt/rtk_cov", rtk_cov, 0.02);
     nh.param<double>("opt/livo2_RPY_cov", livo2_RPY_cov, 1e-4);
     nh.param<double>("opt/livo2_XYZ_cov", livo2_XYZ_cov, 1e-4);
 
-    // subGPS = nh.subscribe<sensor_msgs::NavSatFix>(gps_topic, 2000, &optimization::gpsHandler, this);
-    subGPS_pvt = nh.subscribe<gnss_comm::GnssPVTSolnMsg>(gps_topic, 2000, &optimization::gpsHandler, this);
-
     Eigen::Vector3d gps_lever_arm_; 
     gps_lever_arm_(0) = gps_extrinT[0]; 
     gps_lever_arm_(1) = gps_extrinT[1]; 
     gps_lever_arm_(2) = gps_extrinT[2]; 
     T_imu_rtk = gtsam::Pose3(gtsam::Rot3(), gtsam::Point3(gps_lever_arm_));
-
-    subOdom_.subscribe(nh, "/odometry/fast_livo2", 2000);
-    subCloud_.subscribe(nh, "/synced_cloud", 2000);
-    sync_ = std::make_unique<message_filters::Synchronizer<SyncPolicy>>(SyncPolicy(10), subOdom_, subCloud_);
-    sync_->registerCallback(boost::bind(&optimization::syncedCallback, this, _1, _2));
 
     keyFrames.clear();
 
@@ -401,14 +419,21 @@ void optimization::offlineOptimizationTask() {
     }
 
     waitForKeyFrameIdle(3.0);
+    if (!ros::ok() || optimization_shutdown_requested_.load()) return;
     {
         std::lock_guard<std::mutex> lock(mutex);
         accepting_keyframes_ = false;
+        accepting_gnss_ = false;
     }
     std::cout << "[Offline Optimization] Starting batch optimization..." << std::endl;
-    initialAlign();
-    std::cout << "[Offline Optimization] Initial alignment done." << std::endl;
+    writeInputEvents();
     writeTumTrajectory(livo_tum_before_output_path_);
+    if (!gps_en || !initialAlign()) {
+        ROS_WARN("[Offline Optimization] no global alignment; exporting original odom data only.");
+        saveOptimizedGlobalMap();
+        return;
+    }
+    std::cout << "[Offline Optimization] Initial alignment done." << std::endl;
     saveOptimizedGlobalMap();
     std::cout << "[Offline Optimization] Initial global map and tum saved." << std::endl;
     
@@ -422,27 +447,22 @@ void optimization::offlineOptimizationTask() {
     buildBatchGraph();
     gtsam::LevenbergMarquardtOptimizer optimizer(gtSAMgraph, initialEstimate);
     gtsam::Values result = optimizer.optimize();
-    initialEstimate = result;
+    optimizedEstimate = result;
     std::cout << "[Offline Optimization] First optimization pass done." <<  std::endl;
 
     is_optimized = true;
-    int numPoses = initialEstimate.size();
+    int numPoses = optimizedEstimate.size();
 
     for (int i = 0; i < numPoses; ++i) {
-        gtsam::Pose3 rtk_optimizedPose = initialEstimate.at<gtsam::Pose3>(i);
-        keyFrames[i].pose = rtk_optimizedPose;
+        const gtsam::Pose3 antenna_pose = optimizedEstimate.at<gtsam::Pose3>(i);
+        keyFrames[i].optimized_pose = antenna_pose.compose(T_imu_rtk.inverse());
+        keyFrames[i].has_optimized_pose = true;
     }
 
     writeOptimizedTumTrajectory();
     std::cout << "[Offline Optimization] Optimized TUM trajectory saved "  << std::endl;
     writeRtkTumTrajectory();
     std::cout << "[Offline Optimization] RTK TUM trajectory saved " << std::endl;
-
-    for (int i = 0; i < numPoses; ++i) {
-        gtsam::Pose3 rtk_optimizedPose = initialEstimate.at<gtsam::Pose3>(i);
-        gtsam::Pose3 imu_optimizedPose = rtk_optimizedPose.compose((T_imu_rtk).inverse());
-        keyFrames[i].pose = imu_optimizedPose;
-    }
 
     std::cout << "[Offline Optimization] Saving maps and trajectories..." << std::endl;
     //savekeyframescan();
@@ -456,7 +476,7 @@ void optimization::waitForKeyFrameIdle(double idle_seconds)
 {
     const ros::WallDuration idle_duration(idle_seconds);
     size_t last_count = 0;
-    while (ros::ok()) {
+    while (ros::ok() && !optimization_shutdown_requested_.load()) {
         size_t current_count = 0;
         ros::WallTime last_keyframe_time;
         {
@@ -480,30 +500,72 @@ void optimization::waitForKeyFrameIdle(double idle_seconds)
     }
 }
 
-void optimization::saveKeyFrameAndFactor(const gtsam::Pose3& pose,
-                                         double time,
-                                         const Eigen::Vector3d& velocity,
-                                         const PointCloudXYZRGB::Ptr& cloud)
+void optimization::onKeyframe(const backend::KeyframeEvent& event)
 {
     std::lock_guard<std::mutex> lock(mutex);
     if (!accepting_keyframes_) {
         return;
     }
+    if (!backend::validKeyframe(event) || event.pose_frame != frames.odom ||
+        event.body_frame != frames.imu ||
+        (!keyFrames.empty() && (event.measurement_time <= keyFrames.back().time ||
+                               event.sequence <= keyFrames.back().sequence))) {
+        ROS_WARN("[backend] rejecting invalid, mismatched or non-monotonic keyframe event.");
+        return;
+    }
 
+    if (backend::validRemovals(event)) {
+        for (auto& keyframe : keyFrames) {
+            Eigen::Isometry3d raw = Eigen::Isometry3d::Identity();
+            raw.matrix() = keyframe.pose.matrix();
+            keyframe.cloud = backend::removeMapCells(keyframe.cloud, raw, event);
+        }
+    }
+    if (event.cloud_imu->empty()) return;
     const size_t keyframe_index = keyFrames.size();
+    const gtsam::Pose3 pose(event.T_odom_imu.matrix());
     initialEstimate.insert(keyframe_index, pose);
 
     KeyFrame keyframe;
-    keyframe.time = time;
+    keyframe.time = event.measurement_time;
+    keyframe.sequence = event.sequence;
+    keyframe.pose_frame = event.pose_frame;
+    keyframe.body_frame = event.body_frame;
     keyframe.pose = pose;
-    keyframe.velocity = velocity;
-    keyframe.cloud.reset(new PointCloudXYZRGB());
-    if (cloud) {
-        pcl::copyPointCloud(*cloud, *keyframe.cloud);
-    }
+    keyframe.velocity = event.velocity_odom;
+    keyframe.quality = event.quality;
+    PointCloudXYZRGB::Ptr snapshot(new PointCloudXYZRGB(*event.cloud_imu));
+    keyframe.cloud = snapshot;
 
     keyFrames.push_back(keyframe);
     last_keyframe_wall_time_ = ros::WallTime::now();
+}
+
+void optimization::onGnss(const backend::GnssEvent& event)
+{
+    std::lock_guard<std::mutex> lock(mutex);
+    if (!gps_en || !accepting_gnss_) return;
+    if (!backend::validGnss(event) || !std::isfinite(event.horizontal_accuracy) ||
+        !std::isfinite(event.vertical_accuracy) || event.horizontal_accuracy < 0.0 ||
+        event.vertical_accuracy < 0.0 || event.position_frame != frames.map ||
+        event.body_frame != frames.gnss ||
+        (!gnss_events.empty() && (event.measurement_time <= gnss_events.back().measurement_time ||
+                                 event.sequence <= gnss_events.back().sequence))) {
+        ROS_WARN("[backend] rejecting invalid, mismatched or non-monotonic GNSS event.");
+        return;
+    }
+    if (gnss_fix_enforced && (!event.quality_available || !event.trusted_fix || !event.stable_fix ||
+        !event.valid_fix || event.carrier_solution != 2 || event.fix_type != 3 ||
+        event.satellites < gnss_noise_config.min_satellites ||
+        event.horizontal_accuracy > gnss_noise_config.max_h_accuracy ||
+        event.vertical_accuracy > gnss_noise_config.max_v_accuracy ||
+        !std::isfinite(event.observation_age) || event.observation_age > gnss_noise_config.max_age ||
+        event.observation_age < -gnss_noise_config.future_tolerance)) return;
+    backend::GnssEvent snapshot = event;
+    snapshot.position_variance = health::gnssVariance(event, gnss_noise_config);
+    gnss_events.push_back(snapshot);
+    gpsQueue.push_back(gnssToOdometry(snapshot));
+    gpstimestamp = event.raw_unix_time;
 }
 
 //DTW
@@ -729,15 +791,19 @@ double optimization::estimateVelocityTimeOffset(
 }
 
 //Spacetime synchronization
-void optimization::initialAlign()
+bool optimization::initialAlign()
 {
     //using spline
     std::cout << " [initialAlign] initial align (using Spline)... " << std::endl;
     gpsQueue_B.clear();
+    gps_association_valid.clear();
+    alignment_ready = false;
+    gpsQueue.clear();
+    for (const auto& event : gnss_events) gpsQueue.push_back(gnssToOdometry(event));
 
     if (keyFrames.empty() || gpsQueue.empty()) {
         ROS_WARN("[initialAlign] empty buffers.");
-        return;
+        return false;
     }
 
     std::vector<std::vector<double>> slam_position_data;
@@ -871,7 +937,7 @@ void optimization::initialAlign()
     
     if (T.size() < 2) {
         ROS_WARN("[initialAlign] not enough RTK samples for spline.");
-        return;
+        return false;
     }
 
     auto buildSpline = [](const std::vector<double>& t,
@@ -947,7 +1013,7 @@ void optimization::initialAlign()
     std::vector<double> Mx, My, Mz;
     if (!buildSpline(T, X, Mx) || !buildSpline(T, Y, My) || !buildSpline(T, Z, Mz)) {
         ROS_WARN("[initialAlign] spline build failed.");
-        return;
+        return false;
     }
 
     auto find_nearest_gps = [&](double t_query) -> const nav_msgs::Odometry* {
@@ -986,13 +1052,21 @@ void optimization::initialAlign()
 
         nav_msgs::Odometry gps_odom_B;
         gps_odom_B.header.stamp = ros::Time().fromSec(tk);
-        gps_odom_B.header.frame_id = "map";
+        gps_odom_B.header.frame_id = frames.map;
         gps_odom_B.pose.pose.position.x = evalSpline(T, X, Mx, tk);
         gps_odom_B.pose.pose.position.y = evalSpline(T, Y, My, tk);
         gps_odom_B.pose.pose.position.z = evalSpline(T, Z, Mz, tk);
         gps_odom_B.pose.pose.orientation.w = 1.0; 
 
         const nav_msgs::Odometry* nearest_gps = find_nearest_gps(tk);
+        bool associated = nearest_gps && tk >= T.front() && tk <= T.back();
+        if (associated && gnss_fix_enforced) {
+            const auto upper = std::lower_bound(T.begin(), T.end(), tk);
+            if (upper != T.begin() && upper != T.end() && *upper != tk &&
+                *upper - *(upper - 1) > gnss_noise_config.max_interpolation_gap) associated = false;
+            if (std::abs(nearest_gps->header.stamp.toSec() - tk) > gnss_noise_config.max_age) associated = false;
+        }
+        gps_association_valid.push_back(associated);
         gps_odom_B.pose.covariance[0]  = nearest_gps->pose.covariance[0]; 
         gps_odom_B.pose.covariance[7]  = nearest_gps->pose.covariance[7];  
         gps_odom_B.pose.covariance[14] = nearest_gps->pose.covariance[14];
@@ -1013,6 +1087,7 @@ void optimization::initialAlign()
         
         if (tk > t_end_svd) break; 
         if (tk < T.front() || tk > T.back()) continue; 
+        if (gnss_fix_enforced && !gps_association_valid[i]) continue;
 
         Eigen::Vector3d p_enu_gps;
         p_enu_gps.x() = evalSpline(T, X, Mx, tk);
@@ -1020,7 +1095,7 @@ void optimization::initialAlign()
         p_enu_gps.z() = evalSpline(T, Z, Mz, tk);
         B_enu_gps.push_back(p_enu_gps);
 
-        gtsam::Pose3 T_slam_imu = initialEstimate.at<gtsam::Pose3>(i); 
+        gtsam::Pose3 T_slam_imu = keyFrames[i].pose;
         gtsam::Pose3 T_slam_gps = T_slam_imu.compose(T_imu_rtk);
         
         A_slam_gps.push_back(T_slam_gps.translation());
@@ -1028,21 +1103,23 @@ void optimization::initialAlign()
 
     if (A_slam_gps.size() < 3) {
         ROS_WARN("[initialAlign] too few spline pairs to align.");
-        return;
+        return false;
     }
 
     gtsam::Pose3 T_enu_slam = computeSVD(B_enu_gps, A_slam_gps);
+    T_map_odom = T_enu_slam;
 
     for (size_t i = 0; i < keyFrames.size(); ++i) {
-        gtsam::Pose3 T_slam_imu = initialEstimate.at<gtsam::Pose3>(i);
+        gtsam::Pose3 T_slam_imu = keyFrames[i].pose;
         gtsam::Pose3 T_slam_gps = T_slam_imu.compose(T_imu_rtk);
         gtsam::Pose3 T_enu_gps = T_enu_slam.compose(T_slam_gps);
 
         initialEstimate.update(i, T_enu_gps);
-        keyFrames[i].pose = T_enu_gps;
     }
     
+    alignment_ready = true;
     ROS_INFO("[initialAlign] Spline-based alignment complete.");
+    return true;
 }
 
 //build gtsam graph
@@ -1057,8 +1134,6 @@ void optimization::buildBatchGraph()
         gtsam::noiseModel::Diagonal::Variances((gtsam::Vector(6) << 1e-6, 1e-6, 1e-6, 1e-6, 1e-6, 1e-6).finished());
     gtsam::noiseModel::Diagonal::shared_ptr odometryNoise = 
         gtsam::noiseModel::Diagonal::Variances((gtsam::Vector(6) << livo2_RPY_cov, livo2_RPY_cov, livo2_RPY_cov, livo2_XYZ_cov, livo2_XYZ_cov, livo2_XYZ_cov).finished());
-    gtsam::noiseModel::Diagonal::shared_ptr gps_noise =
-        gtsam::noiseModel::Diagonal::Variances((gtsam::Vector(3) << rtk_cov, rtk_cov, 1).finished());
 
     size_t rtk_idx = 0; 
 
@@ -1072,13 +1147,15 @@ void optimization::buildBatchGraph()
         }
         else 
         {
-            gtsam::Pose3 poseFrom_T_wa = initialEstimate.at<gtsam::Pose3>(i-1);
-            gtsam::Pose3 poseTo_T_wa   = initialEstimate.at<gtsam::Pose3>(i);
+            gtsam::Pose3 poseFrom_T_wa = keyFrames[i-1].pose.compose(T_imu_rtk);
+            gtsam::Pose3 poseTo_T_wa   = keyFrames[i].pose.compose(T_imu_rtk);
             gtsam::Pose3 T_rel_ant_from_svd = poseFrom_T_wa.between(poseTo_T_wa);
             gtSAMgraph.add(gtsam::BetweenFactor<gtsam::Pose3>(i-1, i, T_rel_ant_from_svd, odometryNoise));
         }
 
         // addrtkfactor
+        if (i >= gpsQueue_B.size() || i >= gps_association_valid.size() ||
+            !gps_association_valid[i]) continue;
         auto it = gpsQueue_B[i];
         double x = it.pose.pose.position.x;
         double y = it.pose.pose.position.y;
@@ -1089,81 +1166,14 @@ void optimization::buildBatchGraph()
         double cov_y = it.pose.covariance[7]; 
         double cov_z = it.pose.covariance[14]; 
 
+        const auto gps_noise = gtsam::noiseModel::Diagonal::Variances(
+            (gtsam::Vector(3) << std::max(cov_x, gnss_noise_config.sigma_xy_floor * gnss_noise_config.sigma_xy_floor),
+             std::max(cov_y, gnss_noise_config.sigma_xy_floor * gnss_noise_config.sigma_xy_floor),
+             std::max(cov_z, gnss_noise_config.sigma_z_floor * gnss_noise_config.sigma_z_floor)).finished());
         gtSAMgraph.add(gtsam::GPSFactor(i, gps_point, gps_noise));
 
     }
 } 
-
-void optimization::syncedCallback(const nav_msgs::Odometry::ConstPtr& odomMsg, const sensor_msgs::PointCloud2::ConstPtr& cloudMsg)
-{
-    timeLaserInoStamp = cloudMsg->header.stamp;
-    timeLaserInfoCur  = cloudMsg->header.stamp.toSec();
-
-    tf::Quaternion orientation;
-    tf::quaternionMsgToTF(odomMsg->pose.pose.orientation, orientation);
-    double roll, pitch, yaw;
-    tf::Matrix3x3(orientation).getRPY(roll, pitch, yaw);
-
-    gtsam::Pose3 pose(
-        gtsam::Rot3::RzRyRx(roll, pitch, yaw),
-        gtsam::Point3(odomMsg->pose.pose.position.x,
-                      odomMsg->pose.pose.position.y,
-                      odomMsg->pose.pose.position.z));
-
-    const auto& velocity_msg = odomMsg->twist.twist.linear;
-    Eigen::Vector3d velocity(velocity_msg.x, velocity_msg.y, velocity_msg.z);
-
-    PointCloudXYZRGB::Ptr cloud(new PointCloudXYZRGB());
-    pcl::fromROSMsg(*cloudMsg, *cloud);
-
-    saveKeyFrameAndFactor(pose, timeLaserInfoCur, velocity, cloud);
-}
-
-void optimization::gpsHandler(const gnss_comm::GnssPVTSolnMsg::ConstPtr& gpsMsg)
-{
-    Eigen::Vector3d trans_local_;
-    static bool first_gps = false;
-    if (!first_gps) {
-        first_gps = true;
-        gps_trans_.Reset(gpsMsg->latitude, gpsMsg->longitude, gpsMsg->altitude);
-    }
-
-    // GPS time to UNIX time
-    const double GPS_EPOCH_UNIX_TIME = 315964800.0;
-    const double SECONDS_PER_WEEK = 604800.0; 
-    const double LEAP_SECONDS = 18.0;
-    
-    int week = gpsMsg->time.week;
-    double tow = gpsMsg->time.tow; 
-    double total_gps_seconds = (double)week * SECONDS_PER_WEEK + tow;
-    double timestamp_sec = total_gps_seconds + GPS_EPOCH_UNIX_TIME - LEAP_SECONDS;
-    
-    ros::Time stamp;
-    stamp.fromSec(timestamp_sec);
-    gpstimestamp = timestamp_sec; 
-
-    gps_trans_.Forward(gpsMsg->latitude, gpsMsg->longitude, gpsMsg->altitude, 
-                       trans_local_[0], trans_local_[1], trans_local_[2]);
-
-    nav_msgs::Odometry gps_odom;
-    gps_odom.header.stamp = stamp - ros::Duration(gps_offset); 
-    gps_odom.header.frame_id = "map";
-    gps_odom.pose.pose.position.x = trans_local_[0];
-    gps_odom.pose.pose.position.y = trans_local_[1];
-    gps_odom.pose.pose.position.z = trans_local_[2];
-    gps_odom.pose.pose.orientation = tf::createQuaternionMsgFromRollPitchYaw(0.0, 0.0, 0.0);
-    
-    gps_odom.twist.twist.linear.x = gpsMsg->vel_e;
-    gps_odom.twist.twist.linear.y = gpsMsg->vel_n;
-    gps_odom.twist.twist.linear.z = -gpsMsg->vel_d;
-
-    gps_odom.pose.covariance[0]  = gpsMsg->h_acc; 
-    gps_odom.pose.covariance[7]  = gpsMsg->h_acc; 
-    gps_odom.pose.covariance[14] = gpsMsg->v_acc; 
-
-    pubGpsOdom.publish(gps_odom);
-    gpsQueue.push_back(gps_odom);
-}
 
 void optimization::savekeyframescan()
 {
@@ -1171,7 +1181,10 @@ void optimization::savekeyframescan()
     {
         PointCloudXYZRGB::Ptr keyframe_cloud(new PointCloudXYZRGB());
         *keyframe_cloud = *keyFrames[i].cloud;
-        Eigen::Affine3f transform = poseToAffine3f(keyFrames[i].pose);
+        const auto& frame = keyFrames[i];
+        const gtsam::Pose3 pose = frame.has_optimized_pose ? frame.optimized_pose :
+                                  alignment_ready ? T_map_odom.compose(frame.pose) : frame.pose;
+        Eigen::Affine3f transform = poseToAffine3f(pose);
         pcl::transformPointCloud(*keyframe_cloud, *keyframe_cloud, transform);
         std::string save_path = keyframe_scan_pcd_path_ + std::to_string(i) + ".pcd";
         pcl::io::savePCDFileBinary(save_path, *keyframe_cloud);
@@ -1184,8 +1197,11 @@ void optimization::saveOptimizedGlobalMap()
 
     for (size_t i = 0; i < keyFrames.size(); ++i)
     {
-        Eigen::Affine3f transform = poseToAffine3f(keyFrames[i].pose);
-        PointCloudXYZRGB::Ptr original_cloud = keyFrames[i].cloud;
+        const auto& frame = keyFrames[i];
+        const gtsam::Pose3 pose = frame.has_optimized_pose ? frame.optimized_pose :
+                                  alignment_ready ? T_map_odom.compose(frame.pose) : frame.pose;
+        Eigen::Affine3f transform = poseToAffine3f(pose);
+        PointCloudXYZRGB::ConstPtr original_cloud = keyFrames[i].cloud;
         PointCloudXYZRGB::Ptr transformed_cloud(new PointCloudXYZRGB());
         pcl::transformPointCloud(*original_cloud, *transformed_cloud, transform);
         *globalMapCloud += *transformed_cloud;
@@ -1203,7 +1219,7 @@ void optimization::saveOptimizedGlobalMap()
     pcl::io::savePCDFileBinary(save_path, *globalMapCloud);
 }
 
-void optimization::writeTumTrajectory(const std::string& path) {
+void optimization::writeTumTrajectory(const std::string& path, bool optimized) {
     if (keyFrames.empty()) {
         ROS_WARN("No optimized keyframes to write to TUM file.");
         return;
@@ -1211,10 +1227,14 @@ void optimization::writeTumTrajectory(const std::string& path) {
 
     std::ofstream tum_file(path);
     tum_file << "# timestamp tx ty tz qx qy qz qw" << std::endl;
+    tum_file << "# frame " << (optimized ? frames.map : frames.odom)
+             << " body " << frames.imu << std::endl;
     tum_file << std::fixed << std::setprecision(6);
     for (const auto& keyframe : keyFrames) {
-        const auto& t = keyframe.pose.translation();
-        const auto q = keyframe.pose.rotation().toQuaternion();
+        if (optimized && !keyframe.has_optimized_pose) continue;
+        const auto& pose = optimized ? keyframe.optimized_pose : keyframe.pose;
+        const auto& t = pose.translation();
+        const auto q = pose.rotation().toQuaternion();
         tum_file << keyframe.time << " "
                  << t.x() << " " << t.y() << " " << t.z() << " "
                  << q.x() << " " << q.y() << " " << q.z() << " " << q.w() << std::endl;
@@ -1223,7 +1243,7 @@ void optimization::writeTumTrajectory(const std::string& path) {
 }
 
 void optimization::writeOptimizedTumTrajectory() {
-    writeTumTrajectory(opt_tum_output_path_);
+    writeTumTrajectory(opt_tum_output_path_, true);
 }
 
 void optimization::writeRtkTumTrajectory() {
@@ -1250,6 +1270,32 @@ void optimization::writeRtkTumTrajectory() {
     tum_file.close();
 }
 
+void optimization::writeInputEvents()
+{
+    std::ofstream keyframes(debug_optdata_path_ + "keyframe_events.csv");
+    keyframes << "sequence,time,pose_frame,body_frame,points,lidar_matches,visual_points,lidar_rms\n";
+    keyframes << std::setprecision(17);
+    for (const auto& frame : keyFrames) {
+        keyframes << frame.sequence << "," << frame.time << "," << frame.pose_frame << ","
+                  << frame.body_frame << "," << frame.cloud->size() << ","
+                  << frame.quality.lidar_matches << "," << frame.quality.visual_points << ","
+                  << frame.quality.lidar_residual_rms << "\n";
+    }
+    std::ofstream gnss(debug_optdata_path_ + "gnss_events.csv");
+    gnss << "sequence,raw_time,measurement_time,offset,position_frame,body_frame,x,y,z,"
+            "h_acc,v_acc,valid_fix,carrier_solution,satellites,quality_available\n";
+    gnss << std::setprecision(17);
+    for (const auto& event : gnss_events) {
+        gnss << event.sequence << "," << event.raw_unix_time << "," << event.measurement_time
+             << "," << event.configured_offset << "," << event.position_frame << ","
+             << event.body_frame << "," << event.position_enu.x() << ","
+             << event.position_enu.y() << "," << event.position_enu.z() << ","
+             << event.horizontal_accuracy << "," << event.vertical_accuracy << ","
+             << event.valid_fix << "," << static_cast<int>(event.carrier_solution) << ","
+             << static_cast<int>(event.satellites) << "," << event.quality_available << "\n";
+    }
+}
+
 void optimization::loadData(const std::string& data_dir)
 {
     ROS_INFO("Loading data from directory: %s", data_dir.c_str());
@@ -1258,10 +1304,11 @@ void optimization::loadData(const std::string& data_dir)
     std::string rtk_path = data_dir + "/rtk.txt"; 
     std::ifstream rtk_file(rtk_path);
 
-    if (rtk_file.is_open()) {
+    if (gps_en && rtk_file.is_open()) {
         std::string line;
         int rtk_count = 0;
         gpsQueue.clear(); 
+        gnss_events.clear();
 
         while (std::getline(rtk_file, line)) {
             if (line.empty() || line[0] == '#') continue;
@@ -1270,30 +1317,28 @@ void optimization::loadData(const std::string& data_dir)
             double t, x, y, z;
             double vx = 0.0, vy = 0.0, vz = 0.0;
             double h_acc = 0.0, v_acc = 0.0;
-            ss >> t >> x >> y >> z;
+            if (!(ss >> t >> x >> y >> z)) continue;
             ss >> vx >> vy >> vz >> h_acc >> v_acc;
             
-            nav_msgs::Odometry gps_msg;
-            gps_msg.header.stamp = ros::Time().fromSec(t) - ros::Duration(gps_offset);
-            gps_msg.header.frame_id = "map"; 
-
-            gps_msg.pose.pose.position.x = x;
-            gps_msg.pose.pose.position.y = y;
-            gps_msg.pose.pose.position.z = z;
-            gps_msg.pose.pose.orientation.w = 1.0;
-            gps_msg.twist.twist.linear.x = vx;
-            gps_msg.twist.twist.linear.y = vy;
-            gps_msg.twist.twist.linear.z = vz;
-            gps_msg.pose.covariance[0] = h_acc;
-            gps_msg.pose.covariance[7] = h_acc;
-            gps_msg.pose.covariance[14] = v_acc;
-
-            gpsQueue.push_back(gps_msg);
+            backend::GnssEvent event;
+            event.sequence = gnss_events.size();
+            event.raw_unix_time = t;
+            event.measurement_time = t - gps_offset;
+            event.configured_offset = gps_offset;
+            event.position_frame = frames.map;
+            event.body_frame = frames.gnss;
+            event.position_enu << x, y, z;
+            event.velocity_enu << vx, vy, vz;
+            event.horizontal_accuracy = h_acc;
+            event.vertical_accuracy = v_acc;
+            event.position_variance << h_acc * h_acc, h_acc * h_acc, v_acc * v_acc;
+            event.quality_available = false;
+            onGnss(event);
             rtk_count++;
         }
         rtk_file.close();
         ROS_INFO("Loaded %d RTK measurements.", rtk_count);
-    } else {
+    } else if (gps_en) {
         ROS_WARN("Failed to open RTK file: %s", rtk_path.c_str());
     }
 
@@ -1312,11 +1357,15 @@ void optimization::loadData(const std::string& data_dir)
 
     std::string line_odom, line_cov;
     int processed_count = 0;
+    int scan_index = 0;
+    bool covariance_axes_odom = false;
 
     while (std::getline(odom_file, line_odom) && std::getline(cov_file, line_cov)) {
         
+        if (line_cov.find("covariance_axes=odom") != std::string::npos) covariance_axes_odom = true;
         if (line_odom.empty() || line_odom[0] == '#') continue;
         if (line_cov.empty() || line_cov[0] == '#') continue; 
+        const int current_scan = scan_index++;
 
         std::stringstream ss_odom(line_odom);
         std::stringstream ss_cov(line_cov);
@@ -1334,7 +1383,7 @@ void optimization::loadData(const std::string& data_dir)
         // Odom 
         double tx, ty, tz, qx, qy, qz, qw;
         double vx = 0.0, vy = 0.0, vz = 0.0;
-        ss_odom >> tx >> ty >> tz >> qx >> qy >> qz >> qw;
+        if (!(ss_odom >> tx >> ty >> tz >> qx >> qy >> qz >> qw)) continue;
         ss_odom >> vx >> vy >> vz;
 
         timeLaserInfoCur = t_odom;
@@ -1350,7 +1399,7 @@ void optimization::loadData(const std::string& data_dir)
 
         // PCD
         std::stringstream ss_filename;
-        ss_filename << std::setw(6) << std::setfill('0') << processed_count;
+        ss_filename << std::setw(6) << std::setfill('0') << current_scan;
         std::string pcd_path = pcd_dir + ss_filename.str() + ".pcd";
 
         PointCloudXYZRGB::Ptr cloud(new PointCloudXYZRGB());
@@ -1359,7 +1408,33 @@ void optimization::loadData(const std::string& data_dir)
             continue; 
         }
 
-        saveKeyFrameAndFactor(pose, timeLaserInfoCur, velocity, cloud);
+        backend::KeyframeEvent event;
+        event.sequence = current_scan;
+        event.measurement_time = t_odom;
+        event.pose_frame = frames.odom;
+        event.body_frame = frames.imu;
+        event.T_odom_imu.matrix() = pose.matrix();
+        event.velocity_odom = velocity;
+        event.cloud_imu = cloud;
+        Eigen::Matrix<double, 6, 6> ros_covariance;
+        bool covariance_ok = true;
+        for (int r = 0; r < 6; ++r)
+            for (int c = 0; c < 6; ++c)
+                if (!(ss_cov >> ros_covariance(r, c))) covariance_ok = false;
+        if (!covariance_ok) {
+            ROS_WARN("[loadData] malformed covariance at scan %d", current_scan);
+            continue;
+        }
+        if (covariance_axes_odom) {
+            event.quality.pose_covariance = backend::poseCovarianceFromRos(
+                event.T_odom_imu.linear(), ros_covariance);
+        } else {
+            // Older logs only permuted native rotation/position blocks.
+            for (int r = 0; r < 6; ++r)
+                for (int c = 0; c < 6; ++c)
+                    event.quality.pose_covariance(r, c) = ros_covariance((r + 3) % 6, (c + 3) % 6);
+        }
+        onKeyframe(event);
         processed_count++;
     }
     
