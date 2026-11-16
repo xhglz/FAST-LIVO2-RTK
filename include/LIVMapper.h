@@ -25,6 +25,10 @@ which is included as part of this source code package.
 #include "backend_events.h"
 #include "health_monitor.h"
 #include "dynamic_filter.h"
+#include "localization_safety.h"
+#include "resource_limits.h"
+#include <fast_livo/LocalizationStatus.h>
+#include <std_srvs/Trigger.h>
 #include <diagnostic_msgs/DiagnosticArray.h>
 
 class LIVMapper
@@ -66,6 +70,18 @@ public:
   void collectFrontendQuality();
   bool dynamicPoseReliable(const StatesGroup& state) const;
   void updateDynamicMap(double time);
+  void initializeResources(ros::NodeHandle& nh);
+  bool resourceInput(health::Sensor sensor, std::size_t incoming = 1);
+  void maintainResources();
+  void recordResources(const char* stage, double milliseconds);
+  bool flushResourcePcd();
+  resources::Config resource_config;
+  std::size_t resource_dropped[3] = {0, 0, 0};
+  std::size_t resource_pcd_chunks = 0, resource_pcd_rejected = 0;
+  bool resource_archive_failed = false;
+  double resource_last_registration_wall = -1.0;
+  std::size_t resource_registration_attempts = 0;
+  std::ofstream resource_file, timing_file;
   dynamic_filter::Config dynamic_config;
   std::unique_ptr<dynamic_filter::Filter> dynamic_filter_engine;
   std::vector<dynamic_filter::State> dynamic_mask;
@@ -73,6 +89,25 @@ public:
   std::ofstream dynamic_removal_file;
   std::set<dynamic_filter::Key> pending_map_removals;
   bool dynamic_map_write_allowed = false;
+  safety::Config safety_config;
+  std::unique_ptr<safety::Machine> safety_machine;
+  std::unique_ptr<safety::Relocalizer> safety_relocalizer;
+  StatesGroup trusted_state;
+  double trusted_state_time = -1.0, safety_process_time = -1.0, recovery_pose_time = -1.0;
+  bool recovery_candidate = false, safety_imu_ready = true, camera_fallback = false;
+  bool safety_online_backend = false;
+  std::string original_odom_frame, recovery_reason;
+  std::deque<sensor_msgs::Imu> stationary_imu;
+  ros::Publisher localization_status_pub, local_debug_pub;
+  ros::ServiceServer reinitialize_service;
+  std::ofstream safety_file, segment_file;
+  void initializeSafety(ros::NodeHandle& nh);
+  void assessSafety();
+  void recordSafety();
+  void publishSafety(double now);
+  bool safetySensor(health::Sensor sensor) const;
+  bool trustedOutputAllowed() const;
+  bool reinitialize(std_srvs::Trigger::Request&, std_srvs::Trigger::Response&);
   void recordGnssDiagnostic(const backend::GnssEvent& event, bool forwarded);
   void publish_img_rgb(const image_transport::Publisher &pubImage, VIOManagerPtr vio_manager);
   void publish_frame_world(const ros::Publisher &pubLaserCloudFullRes, VIOManagerPtr vio_manager);

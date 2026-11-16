@@ -1,0 +1,15 @@
+std_msgs/Header header
+time measurement_time
+uint8 INITIALIZING=0
+uint8 NORMAL=1
+uint8 DEGRADED=2
+uint8 LOST=3
+uint8 RECOVERING=4
+uint8 state
+uint64 segment_id
+bool pose_valid
+bool map_write_allowed
+bool imu_prediction_allowed
+bool camera_available
+bool gnss_available
+string reason

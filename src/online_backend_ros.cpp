@@ -1,4 +1,5 @@
 #include "online_backend.h"
+#include "resource_limits.h"
 #include <diagnostic_msgs/DiagnosticArray.h>
 #include <pcl_conversions/pcl_conversions.h>
 #include <filesystem>
@@ -71,6 +72,14 @@ void loadConfig(ros::NodeHandle& nh, Config& c)
     count(nh, p + "cloud_cache", c.cloud_cache);
     count(nh, p + "cloud_max_points", c.cloud_max_points);
     count(nh, p + "map_max_points", c.map_max_points);
+    bool resources_enabled = false;
+    nh.param("resources/enabled", resources_enabled, false);
+    if (resources_enabled) {
+        c.max_graph_nodes = 5000; c.max_graph_factors = 20000; c.path_max_poses = 2000;
+        count(nh, "resources/graph_nodes", c.max_graph_nodes);
+        count(nh, "resources/graph_factors", c.max_graph_factors);
+        count(nh, "resources/path_poses", c.path_max_poses);
+    }
     if (c.init_min_pairs < 3 || c.max_init_frames < 2 || c.init_min_correlation > 1.0 ||
         c.keyframe_min_time > c.keyframe_max_time || c.keyframe_max_time > c.association_max_gap)
         throw std::invalid_argument("inconsistent online initialization or association limits");
@@ -80,7 +89,11 @@ void loadConfig(ros::NodeHandle& nh, Config& c)
 Backend::Backend(ros::NodeHandle& nh)
 {
     loadConfig(nh, config_);
+    nh.param("resources/enabled", resources_enabled_, false);
     nh.param<bool>("gps/gps_en", gps_enabled_, false);
+    nh.param<bool>("safety/enabled", safety_enabled_, false);
+    nh.param<double>("safety/status_timeout", safety_timeout_, safety_timeout_);
+    if (safety_enabled_) status_sub_ = nh.subscribe("/localization/status", 20, &Backend::onStatus, this);
     bool debug = false;
     nh.param<bool>("opt/debug_mode", debug, false);
     if (debug) throw std::invalid_argument("online mode does not import legacy logs; select backend/mode=batch");
@@ -97,9 +110,14 @@ Backend::Backend(ros::NodeHandle& nh)
         factors_file_.open((directory / "gnss_factors.csv").string());
         if (!events_file_ || !trajectory_file_ || !factors_file_)
             throw std::runtime_error("cannot open online backend logs");
-        events_file_ << "type,time,reason,ready,gnss_live,nodes,gnss_factors,rejected_gnss,updates,"
+        events_file_ << "type,time,segment,reason,ready,gnss_live,nodes,gnss_factors,rejected_gnss,updates,"
                         "last_factor_time,innovation,init_rms,tx,ty,tz,qx,qy,qz,qw\n";
-        factors_file_ << "measurement_time\n";
+        factors_file_ << "measurement_time,segment\n";
+        if (resources_enabled_) {
+            resource_file_.open((directory / "resources.csv").string());
+            if (!resource_file_) throw std::runtime_error("cannot open backend resource log");
+            resource_file_ << "time,type,processing_ms,queue_wait_ms,nodes,factors,cached_points,queue_depth,dropped,budget_exhausted\n";
+        }
     }
     ROS_INFO("[online_backend] iSAM2 worker enabled; no Enter trigger, fixed timing and lever arm.");
     worker_ = std::thread(&Backend::run, this);
@@ -117,23 +135,34 @@ Backend::~Backend()
 
 void Backend::onKeyframe(const backend::KeyframeEvent& event)
 {
-    if (!backend::validKeyframe(event) || event.pose_frame != config_.frames.odom ||
+    if (!backend::validKeyframe(event) || event.pose_frame != backend::segmentFrame(config_.frames.odom, event.segment_id) ||
         event.body_frame != config_.frames.imu) return;
     std::lock_guard<std::mutex> lock(mutex_);
+    if (event.segment_start) {
+        queue_.clear();
+        have_selected_ = have_latest_ = false;
+    }
     if (shutdown_ || (have_latest_ && event.measurement_time <= latest_.measurement_time)) return;
     latest_ = event;
     latest_.cloud_imu.reset();
     have_latest_ = true;
-    const bool selected = selectable(event, config_) &&
+    Config selection_config = config_;
+    selection_config.frames.odom = event.pose_frame;
+    const bool selected = selectable(event, selection_config) &&
         (!have_selected_ || shouldSelect(last_selected_, last_selected_time_, event, config_));
-    if (!selected && !backend::validRemovals(event)) {
+    if (!selected && !backend::validRemovals(event) && !event.segment_start) {
         wake_.notify_one();
         return;
     }
     if (queue_.size() >= config_.max_queue) { ++dropped_; return; }
+    if (resources_enabled_ && event.removed_cells_odom.size() > 60000) { ++dropped_; return; }
     Event input;
+    input.enqueued = std::chrono::steady_clock::now();
     input.key = event;
-    input.key.cloud_imu.reset(new PointCloudXYZRGB(selected ? *event.cloud_imu : PointCloudXYZRGB()));
+    input.key.cloud_imu = selected ?
+        (resources_enabled_ ? resources::boundedCloud(event.cloud_imu, config_.cloud_max_points) :
+         PointCloudXYZRGB::Ptr(new PointCloudXYZRGB(*event.cloud_imu))) :
+        PointCloudXYZRGB::Ptr(new PointCloudXYZRGB);
     queue_.push_back(std::move(input));
     if (selected) {
         last_selected_ = gtsam::Pose3(event.T_odom_imu.matrix());
@@ -143,6 +172,31 @@ void Backend::onKeyframe(const backend::KeyframeEvent& event)
     wake_.notify_one();
 }
 
+void Backend::onStatus(const fast_livo::LocalizationStatus::ConstPtr& status)
+{
+    if (status->header.frame_id != backend::segmentFrame(config_.frames.odom, status->segment_id)) return;
+    std::lock_guard<std::mutex> lock(mutex_);
+    local_status_ = *status;
+    wake_.notify_one();
+}
+
+void Backend::archiveSegment()
+{
+    if (config_.output_directory.empty()) return;
+    const auto dir = std::filesystem::path(config_.output_directory) / "online/segments";
+    std::filesystem::create_directories(dir);
+    std::ofstream out((dir / (std::to_string(core_->segment()) + "_poses.csv")).string());
+    if (!out) throw std::runtime_error("cannot archive previous local segment");
+    out << "time,sequence,raw_x,raw_y,raw_z,raw_qx,raw_qy,raw_qz,raw_qw,aligned,map_x,map_y,map_z\n";
+    for (const auto& node : core_->nodes()) {
+        const auto q = node.raw.rotation().toQuaternion();
+        out << std::setprecision(17) << node.time << "," << node.sequence << ","
+            << node.raw.x() << "," << node.raw.y() << "," << node.raw.z() << ","
+            << q.x() << "," << q.y() << "," << q.z() << "," << q.w() << "," << core_->ready() << ","
+            << node.optimized.x() << "," << node.optimized.y() << "," << node.optimized.z() << "\n";
+    }
+}
+
 void Backend::onGnss(const backend::GnssEvent& event)
 {
     if (!gps_enabled_) return;
@@ -150,6 +204,7 @@ void Backend::onGnss(const backend::GnssEvent& event)
     if (shutdown_) return;
     if (queue_.size() >= config_.max_queue) { ++dropped_; return; }
     Event input;
+    input.enqueued = std::chrono::steady_clock::now();
     input.is_gnss = true;
     input.gps = event;
     queue_.push_back(std::move(input));
@@ -161,7 +216,7 @@ void Backend::record(const std::string& type, double time)
     if (events_file_) {
         const auto& T = core_->correction();
         const auto q = T.rotation().toQuaternion();
-        events_file_ << std::setprecision(17) << type << "," << time << "," << core_->reason()
+        events_file_ << std::setprecision(17) << type << "," << time << "," << core_->segment() << "," << core_->reason()
             << "," << core_->ready() << "," << core_->gnssLive() << "," << core_->nodes().size()
             << "," << core_->gnssFactors() << "," << core_->rejectedGnss() << "," << core_->updates()
             << "," << core_->lastFactorTime() << "," << core_->lastInnovation() << "," << core_->initRms()
@@ -171,7 +226,7 @@ void Backend::record(const std::string& type, double time)
     }
     while (logged_factors_ < core_->factorTimes().size()) {
         if (factors_file_)
-            factors_file_ << std::setprecision(17) << core_->factorTimes()[logged_factors_] << "\n";
+            factors_file_ << std::setprecision(17) << core_->factorTimes()[logged_factors_] << "," << core_->segment() << "\n";
         ++logged_factors_;
     }
     if (factors_file_) factors_file_.flush();
@@ -184,6 +239,7 @@ void Backend::run()
         bool have_input = false, have_latest;
         backend::KeyframeEvent latest;
         std::size_t depth, dropped;
+        fast_livo::LocalizationStatus status;
         {
             std::unique_lock<std::mutex> lock(mutex_);
             wake_.wait_for(lock, std::chrono::milliseconds(100), [&] { return shutdown_ || !queue_.empty(); });
@@ -197,16 +253,32 @@ void Backend::run()
             have_latest = have_latest_;
             depth = queue_.size();
             dropped = dropped_;
+            status = local_status_;
         }
+        const double status_age = ros::Time::now().toSec() - status.header.stamp.toSec();
+        const auto processing_start = std::chrono::steady_clock::now();
+        const bool status_valid = !safety_enabled_ || (status.pose_valid &&
+            status_age >= -0.2 && status_age <= safety_timeout_ && status.segment_id == core_->segment());
+        core_->setLocalValid(status_valid);
         if (have_input) {
             try {
                 if (input.is_gnss) core_->addGnss(input.gps);
                 else {
+                    if (input.key.segment_start && input.key.segment_id > core_->segment()) {
+                        archiveSegment();
+                        logged_factors_ = 0;
+                        last_path_update_ = last_map_time_ = 0;
+                        budget_archived_ = false;
+                    }
                     core_->addKeyframe(input.key);
                     if (backend::validRemovals(input.key)) last_map_time_ = 0.0;
                 }
                 record(input.is_gnss ? "gnss" : "keyframe",
                        input.is_gnss ? input.gps.measurement_time : input.key.measurement_time);
+                if (resources_enabled_ && core_->failed() && !budget_archived_) {
+                    archiveSegment();
+                    budget_archived_ = true;
+                }
             } catch (const std::exception& error) {
                 ROS_ERROR("[online_backend] event processing failed: %s", error.what());
                 // Never continue from a partially modified incremental graph.
@@ -216,7 +288,7 @@ void Backend::run()
         const double now = ros::Time::now().toSec();
         // Do not declare loss while accepted events are still waiting to be processed.
         if (depth == 0) core_->tick(now);
-        const bool local_healthy = have_latest && latest.quality.lidar_update_accepted &&
+        const bool local_healthy = status_valid && have_latest && latest.quality.local_pose_valid && latest.quality.lidar_update_accepted &&
             latest.quality.lidar_matches >= config_.min_matches &&
             latest.quality.eigen_ratio >= config_.min_eigen_ratio &&
             std::isfinite(latest.quality.normalized_residual_rms) &&
@@ -226,6 +298,14 @@ void Backend::run()
         } catch (const std::exception& error) {
             core_->disable();
             ROS_ERROR("[online_backend] output failed, global output disabled: %s", error.what());
+        }
+        if (resource_file_ && have_input) {
+            resource_file_ << std::setprecision(17) << now << "," << (input.is_gnss ? "gnss" : "keyframe") << ","
+                << std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - processing_start).count() << ","
+                << std::chrono::duration<double, std::milli>(processing_start - input.enqueued).count() << ","
+                << core_->nodes().size() << "," << core_->graphFactors() << "," << core_->cachedPoints()
+                << "," << depth << "," << dropped << "," << core_->failed() << "\n";
+            resource_file_.flush();
         }
     }
 }
@@ -244,7 +324,7 @@ void Backend::publish(const backend::KeyframeEvent& latest, double now, bool loc
         status.name = "fast_livo/online_backend";
         status.hardware_id = "FAST-LIVO2-RTK";
         const std::string reason = !gps_enabled_ ? "GNSS_DISABLED" :
-            core_->failed() ? "OPTIMIZER_FAILED" :
+            core_->failed() ? core_->reason() :
             !local_recent ? "LOCAL_ODOMETRY_MISSING" :
             !local_healthy ? "LOCAL_QUALITY_LOW" : core_->reason();
         status.level = core_->failed() || (core_->ready() && !valid) ? 2 :
@@ -272,6 +352,12 @@ void Backend::publish(const backend::KeyframeEvent& latest, double now, bool loc
         value("queue_dropped", dropped);
         value("pending_gnss", core_->pending());
         value("cloud_cache_limit", config_.cloud_cache);
+        if (resources_enabled_) {
+            value("cached_points", core_->cachedPoints());
+            value("graph_factors", core_->graphFactors());
+            value("graph_node_limit", config_.max_graph_nodes);
+            value("graph_factor_limit", config_.max_graph_factors);
+        }
         message.status.push_back(status);
         status_pub_.publish(message);
     }
@@ -284,7 +370,7 @@ void Backend::publish(const backend::KeyframeEvent& latest, double now, bool loc
     transform.setOrigin(tf::Vector3(core_->correction().x(), core_->correction().y(), core_->correction().z()));
     transform.setRotation(tf::Quaternion(correction_q.x(), correction_q.y(), correction_q.z(), correction_q.w()));
     const ros::Time stamp(latest.measurement_time);
-    tf_.sendTransform(tf::StampedTransform(transform, stamp, config_.frames.map, config_.frames.odom));
+    tf_.sendTransform(tf::StampedTransform(transform, stamp, config_.frames.map, latest.pose_frame));
     nav_msgs::Odometry odom;
     odom.header.stamp = stamp;
     odom.header.frame_id = config_.frames.map;
@@ -327,7 +413,11 @@ void Backend::publish(const backend::KeyframeEvent& latest, double now, bool loc
         last_path_update_ = core_->updates();
         nav_msgs::Path path;
         path.header = odom.header;
-        for (const auto& node : core_->nodes()) {
+        const auto& nodes = core_->nodes();
+        const std::size_t first = config_.path_max_poses && nodes.size() > config_.path_max_poses ?
+            nodes.size() - config_.path_max_poses : 0;
+        for (std::size_t i = first; i < nodes.size(); ++i) {
+            const auto& node = nodes[i];
             geometry_msgs::PoseStamped pose;
             pose.header.frame_id = config_.frames.map;
             pose.header.stamp.fromSec(node.time);

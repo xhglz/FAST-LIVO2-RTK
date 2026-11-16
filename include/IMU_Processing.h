@@ -31,6 +31,7 @@ public:
   ~ImuProcess();
 
   void Reset();
+  void rebase(double time, const sensor_msgs::ImuConstPtr& lastimu);
   void Reset(double start_timestamp, const sensor_msgs::ImuConstPtr &lastimu);
   void set_extrinsic(const V3D &transl, const M3D &rot);
   void set_extrinsic(const V3D &transl);

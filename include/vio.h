@@ -85,6 +85,8 @@ class VIOManager
 public:
   std::function<bool(const V3D&)> static_point_allowed;
   void pruneNonStaticPoints();
+  std::size_t resource_max_points = 0, resource_point_count = 0;
+  int resource_frame_window = 0;
   int grid_size;
   vk::AbstractCamera *cam;
   vk::PinholeCamera *pinhole_cam;

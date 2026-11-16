@@ -195,6 +195,8 @@ public:
   std::string map_frame_ = "odom";
   double measurement_time_ = 0.0;
   std::unordered_map<VOXEL_LOCATION, VoxelOctoTree *> voxel_map_;
+  std::uint64_t map_revision_ = 0;
+  std::size_t resource_max_roots = 0, resource_rejected_points = 0;
   std::unordered_map<VOXEL_LOCATION, VoxelOctoTree *> temporary_map_;
   std::function<bool(const V3D&)> permanent_point_allowed_;
   std::function<bool(const V3D&)> estimation_point_allowed_;

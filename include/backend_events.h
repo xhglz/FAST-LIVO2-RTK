@@ -41,12 +41,15 @@ struct Quality
     bool static_filter_available = false;
     bool lidar_update_accepted = true;
     bool visual_update = false;
+    bool local_pose_valid = true;
 };
 
 struct KeyframeEvent
 {
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
     std::uint64_t sequence = 0;
+    std::uint64_t segment_id = 0;
+    bool segment_start = false;
     double measurement_time = 0.0;
     std::string pose_frame = "odom";
     std::string body_frame = "imu_link";
@@ -59,6 +62,11 @@ struct KeyframeEvent
     double removed_cell_size = 0.0;
     std::vector<std::array<int, 3>> removed_cells_odom;
 };
+
+inline std::string segmentFrame(const std::string& base, std::uint64_t segment)
+{
+    return segment ? base + "_s" + std::to_string(segment) : base;
+}
 
 inline bool validRemovals(const KeyframeEvent& event)
 {
@@ -145,7 +153,7 @@ inline bool validKeyframe(const KeyframeEvent& event)
            (R.transpose() * R - Eigen::Matrix3d::Identity()).norm() < 1e-6 &&
            std::abs(R.determinant() - 1.0) < 1e-6 &&
            event.quality.pose_covariance.allFinite() && event.cloud_imu &&
-           (!event.cloud_imu->empty() || validRemovals(event)) &&
+           (!event.cloud_imu->empty() || validRemovals(event) || (event.segment_start && event.segment_id > 0)) &&
            (event.removed_cells_odom.empty() || validRemovals(event)) &&
            !event.pose_frame.empty() && !event.body_frame.empty();
 }

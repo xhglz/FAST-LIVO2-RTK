@@ -1,0 +1,40 @@
+{
+  "cases": [
+    {
+      "name": "hh_normal",
+      "scene": "unlabelled_normal",
+      "bag": "/root/datasets/HH-LVGO-01_compressed.bag",
+      "args": ["--gps", "on", "--online", "--safety", "--resources", "--duration", "20", "--rate", "0.5", "--deterministic"]
+    },
+    {
+      "name": "hh_faults",
+      "scene": "synthetic_sensor_and_gnss_faults",
+      "bag": "/root/datasets/HH-LVGO-01_compressed.bag",
+      "args": ["--gps", "on", "--online", "--safety", "--resources", "--safety-faults", "--faults", "--dynamic-filter", "--duration", "40", "--rate", "0.5", "--deterministic"]
+    },
+    {
+      "name": "hh_capacity",
+      "scene": "intentional_capacity_exhaustion",
+      "bag": "/root/datasets/HH-LVGO-01_compressed.bag",
+      "args": ["--gps", "on", "--online", "--safety", "--resources", "--resource-stress", "--duration", "40", "--rate", "0.5", "--deterministic"]
+    },
+    {
+      "name": "dynamic_people_vehicles",
+      "scene": "dynamic_people_vehicles",
+      "bag": null,
+      "reason": "Requires labelled dynamic ROI and static wall reference; no verified scene clip supplied."
+    },
+    {
+      "name": "corridor",
+      "scene": "corridor",
+      "bag": null,
+      "reason": "No verified corridor clip supplied."
+    },
+    {
+      "name": "low_light",
+      "scene": "low_light",
+      "bag": null,
+      "reason": "No verified low-light clip supplied; camera dropout is not low-light validation."
+    }
+  ]
+}

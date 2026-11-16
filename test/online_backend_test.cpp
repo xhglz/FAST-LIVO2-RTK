@@ -330,6 +330,83 @@ TEST(OnlineMap, RemovalOnlyEventClearsCachedMapWithoutChangingRawPoses)
     EXPECT_EQ(core.gnssFactors(), 12u);
 }
 
+TEST(OnlineSafety, InvalidLocalStateSuspendsGnssIndependently)
+{
+    const auto c = config();
+    online::Core core(c);
+    initialize(core, c);
+    const auto factors = core.gnssFactors();
+    core.setLocalValid(false);
+    EXPECT_FALSE(core.addGnss(fix(frame(12), c)));
+    EXPECT_EQ(core.gnssFactors(), factors);
+    EXPECT_FALSE(core.gnssLive());
+}
+
+TEST(OnlineSafety, NewSegmentHasNoCrossSegmentOdometryFactor)
+{
+    const auto c = config();
+    online::Core core(c);
+    initialize(core, c);
+    ASSERT_TRUE(core.ready());
+    auto start = frame(12);
+    start.segment_id = 1;
+    start.segment_start = true;
+    start.pose_frame = "odom_s1";
+    start.cloud_imu.reset(new PointCloudXYZRGB);
+    ASSERT_TRUE(backend::validKeyframe(start));
+    EXPECT_FALSE(core.addKeyframe(start));
+    EXPECT_EQ(core.segment(), 1u);
+    EXPECT_FALSE(core.ready());
+    EXPECT_TRUE(core.nodes().empty());
+    EXPECT_EQ(core.gnssFactors(), 0u);
+    core.setLocalValid(true);
+    for (int i = 20; i < 32; ++i) {
+        auto f = frame(i);
+        f.segment_id = 1;
+        f.pose_frame = "odom_s1";
+        f.T_odom_imu.translation().x() -= 10.0;
+        core.addKeyframe(f);
+        core.addGnss(fix(f, c));
+    }
+    ASSERT_TRUE(core.ready());
+    EXPECT_EQ(core.nodes().size(), 12u);
+    EXPECT_EQ(core.nodes().front().sequence, 20u);
+    EXPECT_TRUE(core.correction().equals(alignment(), 1e-5));
+    auto stale = frame(32);
+    EXPECT_FALSE(core.addKeyframe(stale));
+}
+
+TEST(OnlineResources, NodeBudgetStopsGlobalWithoutUnboundedGrowth)
+{
+    auto c = config(); c.max_graph_nodes = 12; c.cloud_cache = 3;
+    online::Core core(c);
+    initialize(core, c);
+    ASSERT_TRUE(core.ready());
+    EXPECT_LE(core.cachedPoints(), 3u);
+    const auto factors = core.graphFactors();
+    EXPECT_FALSE(core.addKeyframe(frame(12)));
+    EXPECT_TRUE(core.failed());
+    EXPECT_FALSE(core.ready());
+    EXPECT_EQ(core.reason(), "GRAPH_NODE_BUDGET_EXHAUSTED");
+    for (int i = 13; i < 100; ++i) core.addKeyframe(frame(i));
+    EXPECT_EQ(core.nodes().size(), 12u);
+    EXPECT_EQ(core.graphFactors(), factors);
+}
+
+TEST(OnlineResources, FactorBudgetIsCheckedBeforeIsamMutation)
+{
+    auto c = config(); c.max_graph_factors = 24;
+    online::Core core(c);
+    initialize(core, c);
+    ASSERT_TRUE(core.ready());
+    ASSERT_EQ(core.graphFactors(), 24u);
+    core.addKeyframe(frame(12));
+    EXPECT_TRUE(core.failed());
+    EXPECT_EQ(core.reason(), "GRAPH_FACTOR_BUDGET_EXHAUSTED");
+    EXPECT_EQ(core.graphFactors(), 24u);
+    EXPECT_FALSE(core.addGnss(fix(frame(12), c)));
+}
+
 int main(int argc, char** argv)
 {
     ros::Time::init();

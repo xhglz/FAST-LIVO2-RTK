@@ -502,6 +502,7 @@ void optimization::waitForKeyFrameIdle(double idle_seconds)
 
 void optimization::onKeyframe(const backend::KeyframeEvent& event)
 {
+    if (event.segment_id != 0 || !event.quality.local_pose_valid) return;
     std::lock_guard<std::mutex> lock(mutex);
     if (!accepting_keyframes_) {
         return;

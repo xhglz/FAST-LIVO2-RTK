@@ -5,6 +5,7 @@
 #include <gtsam/nonlinear/NonlinearFactor.h>
 #include <gtsam/geometry/Pose3.h>
 #include <condition_variable>
+#include <chrono>
 #include <deque>
 #include <fstream>
 #include <mutex>
@@ -12,6 +13,7 @@
 #include <nav_msgs/Odometry.h>
 #include <nav_msgs/Path.h>
 #include <tf/transform_broadcaster.h>
+#include <fast_livo/LocalizationStatus.h>
 
 namespace online {
 
@@ -53,6 +55,7 @@ struct Config
     double map_period = 5.0, map_leaf = 0.25;
     std::size_t max_queue = 200, max_pending_gnss = 300, max_init_frames = 500;
     std::size_t cloud_cache = 100, cloud_max_points = 20000, map_max_points = 300000;
+    std::size_t max_graph_nodes = 0, max_graph_factors = 0, path_max_poses = 0;
     std::string output_directory;
 };
 
@@ -81,6 +84,9 @@ public:
     bool addKeyframe(const backend::KeyframeEvent& event);
     bool addGnss(const backend::GnssEvent& event);
     void tick(double measurement_time);
+    void setLocalValid(bool valid);
+    bool beginSegment(std::uint64_t segment);
+    std::uint64_t segment() const { return segment_; }
     bool ready() const { return ready_; }
     bool failed() const { return failed_; }
     void disable() { failed_ = true; ready_ = false; gnss_live_ = false; reason_ = "OPTIMIZER_FAILED"; }
@@ -92,6 +98,8 @@ public:
     std::size_t rejectedGnss() const { return gnss_rejected_; }
     std::size_t updates() const { return updates_; }
     std::size_t pending() const { return pending_.size(); }
+    std::size_t graphFactors() const { return isam_->getFactorsUnsafe().size(); }
+    std::size_t cachedPoints() const;
     double lastFactorTime() const { return last_factor_time_; }
     double lastInnovation() const { return last_innovation_; }
     double initRms() const { return init_rms_; }
@@ -103,9 +111,13 @@ private:
     bool initialize();
     void processPending();
     void resetFix();
+    void exhaustBudget(const char* reason);
     void update(const gtsam::NonlinearFactorGraph& graph, const gtsam::Values& values);
     gtsam::SharedNoiseModel gnssNoise(const backend::GnssEvent& event, double interval) const;
     Config config_;
+    std::string base_odom_frame_;
+    std::uint64_t segment_ = 0;
+    bool local_valid_ = true;
     Nodes nodes_;
     std::deque<backend::GnssEvent, Eigen::aligned_allocator<backend::GnssEvent>> pending_;
     std::unique_ptr<gtsam::ISAM2> isam_;
@@ -130,7 +142,10 @@ public:
     void onKeyframe(const backend::KeyframeEvent& event);
     void onGnss(const backend::GnssEvent& event);
 private:
+    void onStatus(const fast_livo::LocalizationStatus::ConstPtr& status);
+    void archiveSegment();
     struct Event {
+        std::chrono::steady_clock::time_point enqueued;
         bool is_gnss = false;
         backend::KeyframeEvent key;
         backend::GnssEvent gps;
@@ -149,12 +164,18 @@ private:
     std::deque<Event> queue_;
     std::size_t dropped_ = 0;
     std::unique_ptr<Core> core_;
+    bool safety_enabled_ = false;
+    fast_livo::LocalizationStatus local_status_;
+    ros::Subscriber status_sub_;
+    double safety_timeout_ = 0.5;
     std::thread worker_;
     ros::Publisher odom_pub_, path_pub_, map_pub_, status_pub_;
     tf::TransformBroadcaster tf_;
     double last_pose_stamp_ = -1.0, last_status_time_ = -1.0, last_map_time_ = -1.0;
     std::size_t last_path_update_ = 0, logged_factors_ = 0;
     std::ofstream events_file_, trajectory_file_, factors_file_;
+    bool resources_enabled_ = false, budget_archived_ = false;
+    std::ofstream resource_file_;
 };
 
 } // namespace online

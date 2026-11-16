@@ -1,4 +1,5 @@
 #include "online_backend.h"
+#include "resource_limits.h"
 #include <gtsam/base/numericalDerivative.h>
 #include <gtsam/slam/PriorFactor.h>
 #include <gtsam/slam/BetweenFactor.h>
@@ -40,7 +41,8 @@ gtsam::Vector AntennaFactor::evaluateError(const gtsam::Pose3& a, const gtsam::P
 bool selectable(const backend::KeyframeEvent& event, const Config& config)
 {
     return backend::validKeyframe(event) && event.pose_frame == config.frames.odom &&
-        event.body_frame == config.frames.imu && !event.cloud_imu->empty() && event.quality.lidar_update_accepted &&
+        event.body_frame == config.frames.imu && !event.cloud_imu->empty() &&
+        event.quality.local_pose_valid && event.quality.lidar_update_accepted &&
         event.quality.lidar_matches >= config.min_matches &&
         std::isfinite(event.quality.eigen_ratio) && event.quality.eigen_ratio >= config.min_eigen_ratio &&
         std::isfinite(event.quality.normalized_residual_rms) &&
@@ -57,7 +59,7 @@ bool shouldSelect(const gtsam::Pose3& previous, double previous_time,
          gtsam::Rot3::Logmap(relative.rotation()).norm() >= config.keyframe_rotation);
 }
 
-Core::Core(const Config& config) : config_(config)
+Core::Core(const Config& config) : config_(config), base_odom_frame_(config.frames.odom)
 {
     gtsam::ISAM2Params params;
     params.relinearizeThreshold = 0.01;
@@ -88,6 +90,13 @@ bool Core::associate(double time, std::size_t& a, std::size_t& b, double& alpha)
 
 bool Core::addKeyframe(const backend::KeyframeEvent& event)
 {
+    if (backend::validKeyframe(event) && event.body_frame == config_.frames.imu &&
+        event.segment_start && event.segment_id > segment_ &&
+        event.pose_frame == backend::segmentFrame(base_odom_frame_, event.segment_id)) {
+        beginSegment(event.segment_id);
+        return false;
+    }
+    if (event.segment_id != segment_) return false;
     if (backend::validKeyframe(event) && event.pose_frame == config_.frames.odom &&
         event.body_frame == config_.frames.imu && backend::validRemovals(event)) {
         for (auto& node : nodes_) {
@@ -106,6 +115,10 @@ bool Core::addKeyframe(const backend::KeyframeEvent& event)
     tick(event.measurement_time);
     if (!nodes_.empty() && !shouldSelect(nodes_.back().raw, nodes_.back().time, event, config_))
         return false;
+    if (config_.max_graph_nodes && nodes_.size() >= config_.max_graph_nodes) {
+        exhaustBudget("GRAPH_NODE_BUDGET_EXHAUSTED");
+        return false;
+    }
 
     Node node;
     node.time = event.measurement_time;
@@ -115,7 +128,9 @@ bool Core::addKeyframe(const backend::KeyframeEvent& event)
     node.optimized = ready_ ? correction_.compose(node.raw) : node.raw;
     pcl::VoxelGrid<PointTypeRGB> filter;
     filter.setLeafSize(config_.map_leaf, config_.map_leaf, config_.map_leaf);
-    filter.setInputCloud(event.cloud_imu);
+    const auto bounded = (config_.max_graph_nodes || config_.max_graph_factors) ?
+        resources::boundedCloud(event.cloud_imu, config_.cloud_max_points) : event.cloud_imu;
+    filter.setInputCloud(bounded);
     PointCloudXYZRGB::Ptr cloud(new PointCloudXYZRGB());
     filter.filter(*cloud);
     if (cloud->size() > config_.cloud_max_points) {
@@ -160,6 +175,7 @@ void Core::resetFix()
 bool Core::addGnss(const backend::GnssEvent& event)
 {
     if (failed_) return false;
+    if (!local_valid_) { ++gnss_rejected_; reason_ = "LOCAL_ODOMETRY_INVALID"; return false; }
     const bool structure = backend::validGnss(event) && event.position_frame == config_.frames.map &&
         event.body_frame == config_.frames.gnss &&
         (!have_gnss_ || (event.measurement_time > last_gnss_time_ && event.sequence > last_gnss_sequence_));
@@ -203,6 +219,35 @@ bool Core::addGnss(const backend::GnssEvent& event)
     }
     if (ready_) processPending();
     else initialize();
+    return true;
+}
+
+void Core::setLocalValid(bool valid)
+{
+    if (!valid && local_valid_) resetFix();
+    local_valid_ = valid;
+    if (!valid) reason_ = "LOCAL_ODOMETRY_INVALID";
+}
+
+bool Core::beginSegment(std::uint64_t segment)
+{
+    if (segment <= segment_) return false;
+    segment_ = segment;
+    config_.frames.odom = backend::segmentFrame(base_odom_frame_, segment);
+    nodes_.clear(); pending_.clear(); factor_times_.clear();
+    ready_ = failed_ = gnss_live_ = have_key_ = have_gnss_ = false;
+    local_valid_ = false;
+    fix_streak_ = 0;
+    last_key_time_ = last_gnss_time_ = last_factor_time_ = -1.0;
+    last_key_sequence_ = last_gnss_sequence_ = 0;
+    gnss_factors_ = gnss_rejected_ = updates_ = 0;
+    last_innovation_ = init_rms_ = 0.0;
+    correction_ = gtsam::Pose3();
+    reason_ = "NEW_ODOMETRY_SEGMENT";
+    gtsam::ISAM2Params params;
+    params.relinearizeThreshold = 0.01;
+    params.relinearizeSkip = 1;
+    isam_.reset(new gtsam::ISAM2(params));
     return true;
 }
 
@@ -376,6 +421,10 @@ void Core::processPending()
 
 void Core::update(const gtsam::NonlinearFactorGraph& graph, const gtsam::Values& values)
 {
+    if (config_.max_graph_factors && !resources::fits(graphFactors(), graph.size(), config_.max_graph_factors)) {
+        exhaustBudget("GRAPH_FACTOR_BUDGET_EXHAUSTED");
+        return;
+    }
     try {
         isam_->update(graph, values);
         isam_->update();
@@ -392,6 +441,21 @@ void Core::update(const gtsam::NonlinearFactorGraph& graph, const gtsam::Values&
         reason_ = "OPTIMIZER_FAILED";
         ROS_ERROR("[online_backend] optimizer disabled: %s", error.what());
     }
+}
+
+void Core::exhaustBudget(const char* reason)
+{
+    failed_ = true;
+    ready_ = gnss_live_ = false;
+    pending_.clear();
+    reason_ = reason;
+}
+
+std::size_t Core::cachedPoints() const
+{
+    std::size_t count = 0;
+    for (const auto& node : nodes_) if (node.cloud) count += node.cloud->size();
+    return count;
 }
 
 void Core::tick(double time)

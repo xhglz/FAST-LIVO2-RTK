@@ -44,6 +44,20 @@ void ImuProcess::Reset()
   IMUpose.clear();
   last_imu.reset(new sensor_msgs::Imu());
   cur_pcl_un_.reset(new PointCloudXYZI());
+  pcl_wait_proc.clear();
+  b_first_frame = true;
+  imu_time_init = false;
+  last_prop_end_time = time_last_scan = 0.0;
+}
+
+void ImuProcess::rebase(double time, const sensor_msgs::ImuConstPtr& lastimu)
+{
+  last_imu = lastimu;
+  last_prop_end_time = time_last_scan = time;
+  IMUpose.clear();
+  pcl_wait_proc.clear();
+  angvel_last.setZero();
+  acc_s_last.setZero();
 }
 
 void ImuProcess::disable_imu()

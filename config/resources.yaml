@@ -1,0 +1,19 @@
+# Opt in with safety and online mode. No silent graph truncation.
+resources:
+  enabled: false
+  imu_queue: 2000
+  lidar_queue: 10
+  camera_queue: 10
+  lidar_points: 200000
+  image_bytes: 16000000
+  map_roots: 40000
+  map_radius: 40.0
+  visual_points: 10000
+  visual_frame_window: 100
+  path_poses: 2000
+  pcd_points: 300000
+  scan_points: 300000
+  registration_points: 5000
+  registration_period: 0.5
+  graph_nodes: 5000
+  graph_factors: 20000

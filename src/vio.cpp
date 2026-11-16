@@ -14,20 +14,28 @@ which is included as part of this source code package.
 
 void VIOManager::pruneNonStaticPoints()
 {
-  if (!static_point_allowed) return;
+  if (!static_point_allowed && !resource_frame_window) return;
   // Submap pointers refer into feat_map and must be dropped before deleting owners.
   visual_submap->reset();
   total_points = 0;
+  resource_point_count = 0;
   for (auto it = feat_map.begin(); it != feat_map.end();) {
     auto& points = it->second->voxel_points;
     for (auto p = points.begin(); p != points.end();) {
-      if (*p && !static_point_allowed((*p)->pos_)) {
+      if (*p && resource_frame_window && new_frame_) {
+        std::vector<Feature*> expired;
+        for (auto* feature : (*p)->obs_)
+          if (feature->id_ < new_frame_->id_ - resource_frame_window) expired.push_back(feature);
+        for (auto* feature : expired) (*p)->deleteFeatureRef(feature);
+      }
+      if (*p && ((static_point_allowed && !static_point_allowed((*p)->pos_)) ||
+          (resource_frame_window && (*p)->obs_.empty()))) {
         delete *p;
         p = points.erase(p);
       } else ++p;
     }
     if (points.empty()) { delete it->second; it = feat_map.erase(it); }
-    else ++it;
+    else { resource_point_count += points.size(); ++it; }
   }
   std::fill(retrieve_voxel_points.begin(), retrieve_voxel_points.end(), nullptr);
 }
@@ -246,6 +254,11 @@ void VIOManager::getImagePatch(cv::Mat img, V2D pc, float *patch_tmp, int level)
 
 void VIOManager::insertPointIntoVoxelMap(VisualPoint *pt_new)
 {
+  if (resource_max_points && resource_point_count >= resource_max_points) {
+    delete pt_new;
+    return;
+  }
+  ++resource_point_count;
   V3D pt_w(pt_new->pos_[0], pt_new->pos_[1], pt_new->pos_[2]);
   double voxel_size = 0.5;
   float loc_xyz[3];

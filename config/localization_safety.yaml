@@ -1,0 +1,21 @@
+# Opt in until controller consumers handle LocalizationStatus and timeouts.
+safety:
+  enabled: false
+  initialize_frames: 5
+  lost_frames: 3
+  recover_frames: 5
+  max_prediction_time: 0.5
+  max_imu_gap: 0.05
+  max_position_sigma: 0.5
+  max_rotation_sigma: 0.15
+  status_timeout: 0.5
+  snapshot_period: 0.5
+  submap_radius: 25.0
+  submap_frames: 8
+  submap_points: 30000
+  registration_distance: 0.6
+  registration_rms: 0.15
+  registration_overlap: 0.6
+  registration_translation: 2.0
+  registration_rotation: 0.35
+  registration_eigen_ratio: 0.00001

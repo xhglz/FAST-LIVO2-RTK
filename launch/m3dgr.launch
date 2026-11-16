@@ -1,0 +1,43 @@
+<launch>
+  <!-- Launch file for M3DGR dataset with Livox MID360 LiDAR -->
+  <node name="image_transport_1" pkg="image_transport" type="republish" args="compressed in:=/camera/color/image_raw raw out:=/camera/color/image_raw" />
+
+  <arg name="rviz" default="true" />
+  <arg name="outputfilepath" default="$(find fast_livo)/output" />
+  <arg name="backend_mode" default="online" />
+  <arg name="dynamic_filter" default="false" />
+  <arg name="safety" default="false" />
+  <arg name="resources" default="false" />
+  <arg name="play_bag" default="true" />
+  <arg name="bag_file" default="/root/datasets/m3dgr.bag" />
+  <arg name="bag_rate" default="1.0" />
+  <arg name="bag_delay" default="3.0" />
+
+  <rosparam command="load" file="$(find fast_livo)/config/m3dgr_mid360.yaml" />
+  <rosparam command="load" file="$(find fast_livo)/config/health.yaml" />
+  <rosparam command="load" file="$(find fast_livo)/config/online_backend.yaml" />
+  <rosparam command="load" file="$(find fast_livo)/config/dynamic_filter.yaml" />
+  <param name="dynamic_filter/enabled" value="$(arg dynamic_filter)" />
+  <rosparam command="load" file="$(find fast_livo)/config/localization_safety.yaml" />
+  <param name="safety/enabled" value="$(arg safety)" />
+  <rosparam command="load" file="$(find fast_livo)/config/resources.yaml" />
+  <param name="resources/enabled" value="$(arg resources)" />
+  <param name="backend/mode" value="$(arg backend_mode)" />
+  <param name="/use_sim_time" value="$(arg play_bag)" />
+
+  <node if="$(arg play_bag)" pkg="rosbag" type="play" name="bag_play"
+    args="--clock --delay=$(arg bag_delay) --rate=$(arg bag_rate) '$(arg bag_file)'" />
+
+  <node pkg="fast_livo" type="fastlivo_mapping" name="laserMapping" output="screen">
+    <rosparam file="$(find fast_livo)/config/camera_pinhole_m3dgr.yaml" />
+  </node>
+
+  <group if="$(arg rviz)">
+    <node launch-prefix="nice" pkg="rviz" type="rviz" name="rviz" args="-d $(find fast_livo)/rviz_cfg/fast_livo2.rviz" />
+  </group>
+
+    <node pkg="image_transport" type="republish" name="republish" args="compressed in:=/left_camera/image raw out:=/left_camera/image" output="screen" respawn="true"/>
+
+  launch-prefix="gdb -ex run --args"
+  launch-prefix="valgrind --leak-check=full"
+</launch>

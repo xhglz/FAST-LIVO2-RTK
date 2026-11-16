@@ -1,3 +1,166 @@
+# NEW
+```text
+激光＋视觉＋IMU → 局部里程计与局部地图（odom）
+                         ↓ 关键帧、相对运动
+RTK → 质量筛选 → 增量全局后端 → map→odom
+                         ↓
+                 全局轨迹与子地图
+```
+- 整理时间、坐标与数据接口
+- 输入数据异常检测
+- 动态过滤
+
+## M3DGR
+- 测试鲁棒性
+- LVIO-RTK，没有 wheel
+
+图片在各组表格下方以 360 像素宽度显示，点击图片可查看原图。
+
+|Sequence Name|indoor/outdoor|Features|Challenge|TEST|
+|--|--|--|--|--|
+|Outdoor01|Outdoor|Standard|None|✅|
+|Outdoor04|Outdoor|Standard|None|✅|
+
+**Outdoor01**
+
+[<img src="doc/m3dgr_outdoor01.png" width="360" alt="Outdoor01">](doc/m3dgr_outdoor01.png)
+
+**Outdoor04**
+
+[<img src="doc/m3dgr_outdoor04.png" width="360" alt="Outdoor04">](doc/m3dgr_outdoor04.png)
+
+|Sequence Name|indoor/outdoor|Features|Challenge|TEST|
+|--|--|--|--|--|
+|Dark01|Outdoor|Night|Visual Challenge|✅|
+|Dark02|Outdoor|Night|Visual Challenge|✅|
+|Dark03|Indoor|Dark Room|Visual Challenge|✅|
+|Dark04|Indoor|Dark Room|Visual Challenge|✅|
+|Dynamic01|Indoor|Dynamic Person|Visual Challenge|✅|
+|Dynamic02|Indoor|Dynamic Person|Visual Challenge|✅|
+|Dynamic03|Outdoor|Dynamic Person|Visual Challenge|✅|
+|Dynamic04|Outdoor|Dynamic Person|Visual Challenge|✅|
+|Occlusion01|Indoor|Full Occlusion|Visual Challenge|✅|
+|Occlusion02|Indoor|Full Occlusion|Visual Challenge|✅|
+|Varying-illu01|Indoor|Varying Illumination|Visual Challenge|✅|
+|Varying-illu02|Indoor|Varying Illumination|Visual Challenge|✅|
+
+**Dark01**
+
+[<img src="doc/m3dgr_visual_Dark01.png" width="360" alt="Dark01">](doc/m3dgr_visual_Dark01.png)
+
+**Dark02**
+
+[<img src="doc/m3dgr_visual_Dark02.png" width="360" alt="Dark02">](doc/m3dgr_visual_Dark02.png)
+
+**Dark03**
+
+[<img src="doc/m3dgr_visual_Dark03.png" width="360" alt="Dark03">](doc/m3dgr_visual_Dark03.png)
+
+**Dark04**
+
+[<img src="doc/m3dgr_visual_Dark04.png" width="360" alt="Dark04">](doc/m3dgr_visual_Dark04.png)
+
+**Dynamic01**
+
+[<img src="doc/m3dgr_visual_Dynamic01.png" width="360" alt="Dynamic01">](doc/m3dgr_visual_Dynamic01.png)
+
+**Dynamic02**
+
+[<img src="doc/m3dgr_visual_Dynamic02.png" width="360" alt="Dynamic02">](doc/m3dgr_visual_Dynamic02.png)
+
+**Dynamic03**
+
+[<img src="doc/m3dgr_visual_Dynamic03.png" width="360" alt="Dynamic03">](doc/m3dgr_visual_Dynamic03.png)
+
+**Dynamic04**
+
+[<img src="doc/m3dgr_visual_Dynamic04_01.png" width="360" alt="Dynamic04 视图 1">](doc/m3dgr_visual_Dynamic04_01.png)
+
+[<img src="doc/m3dgr_visual_Dynamic04.png" width="360" alt="Dynamic04 视图 2">](doc/m3dgr_visual_Dynamic04.png)
+
+**Occlusion01**
+
+[<img src="doc/m3dgr_visual_Occlusion01.png" width="360" alt="Occlusion01">](doc/m3dgr_visual_Occlusion01.png)
+
+**Occlusion02**
+
+[<img src="doc/m3dgr_visual_Occlusion02.png" width="360" alt="Occlusion02">](doc/m3dgr_visual_Occlusion02.png)
+
+**Varying-illu01**
+
+[<img src="doc/m3dgr_visual_Varying-illu01.png" width="360" alt="Varying-illu01">](doc/m3dgr_visual_Varying-illu01.png)
+
+**Varying-illu02**
+
+[<img src="doc/m3dgr_visual_Varying-illu02.png" width="360" alt="Varying-illu02">](doc/m3dgr_visual_Varying-illu02.png)
+
+|Sequence Name|indoor/outdoor|Features|Challenge|TEST|
+|--|--|--|--|--|
+|Grass01|Outdoor|Wheel Float|Wheel Challenge|✅|
+|Grass02|Outdoor|Wheel Float|Wheel Challenge|✅|
+|Sha-turn01|Indoor|Sha-turn|Wheel Challenge|✅|
+|Sha-turn02|Indoor|Sha-turn|Wheel Challenge|✅|
+|Wheel-float01|Indoor|Wheel Float|Wheel Challenge|✅|
+|Wheel-float02|Indoor|Wheel Float|Wheel Challenge|✅|
+|Z-Rough-Road01|Outdoor|Rough Road|Wheel Challenge|✅|
+
+**Grass01**
+
+[<img src="doc/m3dgr_wheel_Grass01.png" width="360" alt="Grass01">](doc/m3dgr_wheel_Grass01.png)
+
+**Grass02**
+
+[<img src="doc/m3dgr_wheel_Grass02.png" width="360" alt="Grass02">](doc/m3dgr_wheel_Grass02.png)
+
+**Sha-turn01**
+
+[<img src="doc/m3dgr_wheel_sha_turn01.png" width="360" alt="Sha-turn01">](doc/m3dgr_wheel_sha_turn01.png)
+
+**Sha-turn02**
+
+[<img src="doc/m3dgr_wheel_sha_turn02.png" width="360" alt="Sha-turn02">](doc/m3dgr_wheel_sha_turn02.png)
+
+**Wheel-float01**
+
+[<img src="doc/m3dgr_wheel_wheel_float01.png" width="360" alt="Wheel-float01">](doc/m3dgr_wheel_wheel_float01.png)
+
+**Wheel-float02**
+
+[<img src="doc/m3dgr_wheel_wheel_float02.png" width="360" alt="Wheel-float02">](doc/m3dgr_wheel_wheel_float02.png)
+
+**Z-Rough-Road01**
+
+[<img src="doc/m3dgr_wheel_Z.png" width="360" alt="Z-Rough-Road01">](doc/m3dgr_wheel_Z.png)
+
+|Sequence Name|indoor/outdoor|Features|Challenge|TEST|
+|--|--|--|--|--|
+|Corridor01|Indoor|Long Corridor|Lidar Challenge|❌|
+|Corridor02|Indoor|Long Corridor|Lidar Challenge|❌|
+|Elevator01|Indoor|Long Corridor,Elevator|Lidar Challenge|❌|
+
+**[todo] 检测 Hessian 退化，限制弱方向更新，用 IMU/VIO 保持短时连续，用结构平面和子地图提供弱先验。**       
+- Hessian 退化: 在 LIO/VIO 更新后记录最小特征值、条件数、弱方向向量
+- 退化方向保护更新: 当检测到 Long Corridor 退化时，不直接信任完整 6DoF LiDAR 更新；对弱方向做降权或冻结，只保留可信方向的修正。
+- 特征增强:提取地面、左右墙面、天花板平面，估计走廊主方向；用主方向稳定 yaw 和横向位置，但不要过度约束沿走廊位移。
+- 关键帧/子地图策略:长走廊中减少无限累积局部地图，按段构建子地图；在拐角、门口、明显结构处建立更强关键帧锚点。
+- 加入轮速计。
+
+|Sequence Name|indoor/outdoor|Features|Challenge|TEST|
+|--|--|--|--|--|
+|GNSS-denial01|outdoor|GNSS Denial|GNSS Challenge|✅|
+|GNSS-denial02|outdoor|GNSS Denial|GNSS Challenge|✅|
+
+**GNSS-denial01**
+
+[<img src="doc/m3dgr_gnss_denial01.png" width="360" alt="GNSS-denial01">](doc/m3dgr_gnss_denial01.png)
+
+**GNSS-denial02**
+
+[<img src="doc/m3dgr_gnss_denial02.png" width="360" alt="GNSS-denial02">](doc/m3dgr_gnss_denial02.png)
+
+
+
+
 # FAST-LIVO2-RTK
 
 FAST-LIVO2-RTK extends FAST-LIVO2 with RTK/GNSS-constrained global optimization for long-term LiDAR-visual mapping.
@@ -118,7 +281,21 @@ in both modes; numerical regression uses a freshly generated, corrected batch ba
 Opt-in [geometric dynamic filtering](doc/dynamic_filter.md) now shares confidence
 gates across LIO, permanent/temporary maps, visual patches and colored keyframes.
 Enable it with `dynamic_filter:=true`; it defaults off pending real dynamic-scene
-validation. Semantic detection and automatic relocalization are not included.
+validation. Semantic detection is not included.
+
+Opt-in [localization safety and recovery](doc/localization_safety.md) adds five
+states, trusted output/map gates, bounded IMU propagation and nearby trusted-submap
+matching. Enable it with `safety:=true`; consumers must check `/localization/status`
+validity, measurement time, segment ID and timeout. Operator-confirmed stationary
+reinitialization creates a new odometry segment in online mode. This is not global
+place recognition or a safety certification; validation limits are documented.
+
+Opt-in [resource limits and regression measurements](doc/resource_regression.md)
+adds sliding map/visual history budgets, bounded queues and PCD chunks, graph
+budget fail-stop, RSS sampling and P95/P99/recovery reports. Use
+`safety:=true resources:=true` in online mode. Graph budget exhaustion invalidates
+global output; fixed-lag marginalization and permanent historical submap graphs
+are not implemented. Missing labelled scene clips are reported as SKIPPED.
 
 ## 3. Appendix
 **Time Synchronization:**

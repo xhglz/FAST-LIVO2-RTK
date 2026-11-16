@@ -22,12 +22,13 @@ void LIVMapper::updateDynamicMap(double time)
 {
     const bool bootstrap = voxelmap_manager->voxel_map_.empty() && frame_num < 15;
     const bool reliable = lio_update_allowed && dynamicPoseReliable(_state) &&
+        (!safety_machine || !safety_machine->recovering()) &&
         last_quality.translation_correction <= dynamic_config.max_correction &&
         last_quality.rotation_correction <= dynamic_config.max_rotation_sigma &&
         (bootstrap || (last_quality.lidar_matches >= frontend_monitor.config.min_matches &&
                        std::isfinite(last_quality.normalized_residual_rms) &&
                        last_quality.normalized_residual_rms <= frontend_monitor.config.max_normalized_rms));
-    dynamic_map_write_allowed = reliable;
+    dynamic_map_write_allowed = reliable && (!safety_machine || safety_machine->mapWritable());
     dynamic_filter_engine->commit(voxelmap_manager->pv_list_, dynamic_mask,
         _state.pos_end + _state.rot_end * extT, time, reliable);
     voxelmap_manager->replaceTemporaryMap(dynamic_filter_engine->temporaryPoints(time));
@@ -52,7 +53,7 @@ void LIVMapper::updateDynamicMap(double time)
         prune(pcl_wait_save);
         prune(pcl_wait_save_intensity);
     }
-    if (reliable) voxelmap_manager->UpdateVoxelMap(voxelmap_manager->pv_list_);
+    if (dynamic_map_write_allowed) voxelmap_manager->UpdateVoxelMap(voxelmap_manager->pv_list_);
     const auto& s = dynamic_filter_engine->stats();
     dynamic_quality_file << std::setprecision(17) << time << "," << reliable;
     for (const auto n : s.points) dynamic_quality_file << "," << n;

@@ -84,6 +84,7 @@ find_package(catkin REQUIRED COMPONENTS
   sensor_msgs
   roscpp
   rospy
+  std_srvs
   std_msgs
   pcl_ros
   tf
@@ -110,8 +111,10 @@ find_package(Boost REQUIRED COMPONENTS timer)
 set(Sophus_LIBRARIES libSophus.so)
 
 # Define the catkin package
+add_message_files(FILES LocalizationStatus.msg)
+generate_messages(DEPENDENCIES std_msgs)
 catkin_package(
-  CATKIN_DEPENDS diagnostic_msgs geometry_msgs gnss_comm nav_msgs roscpp rospy sensor_msgs std_msgs tf message_runtime cv_bridge eigen_conversions vikit_common vikit_ros image_transport
+  CATKIN_DEPENDS diagnostic_msgs geometry_msgs gnss_comm nav_msgs roscpp rospy sensor_msgs std_msgs std_srvs tf message_runtime cv_bridge eigen_conversions vikit_common vikit_ros image_transport
   DEPENDS EIGEN3 PCL OpenCV Sophus
 )
 
@@ -135,20 +138,22 @@ add_library(imu_proc src/IMU_Processing.cpp)
 add_library(health_monitor src/health_monitor.cpp)
 add_library(dynamic_filter src/dynamic_filter.cpp)
 target_link_libraries(dynamic_filter ${catkin_LIBRARIES})
-add_library(laser_mapping src/LIVMapper.cpp src/mapper_diagnostics.cpp src/mapper_dynamic.cpp)
+add_library(localization_safety src/localization_safety.cpp)
+target_link_libraries(localization_safety ${catkin_LIBRARIES} ${PCL_LIBRARIES})
+add_library(laser_mapping src/LIVMapper.cpp src/mapper_diagnostics.cpp src/mapper_dynamic.cpp src/mapper_safety.cpp src/mapper_resources.cpp)
 add_library(optimization src/optimization.cpp)
 add_library(online_backend src/online_backend.cpp src/online_backend_ros.cpp)
-add_dependencies(online_backend ${catkin_EXPORTED_TARGETS})
+add_dependencies(online_backend ${catkin_EXPORTED_TARGETS} ${${PROJECT_NAME}_EXPORTED_TARGETS})
 target_link_libraries(online_backend health_monitor gtsam ${catkin_LIBRARIES}
   ${PCL_LIBRARIES} ${GeographicLib_LIBRARIES})
 
 # Add the main executable
 add_executable(fastlivo_mapping src/main.cpp)
 
-add_dependencies(laser_mapping ${catkin_EXPORTED_TARGETS})
+add_dependencies(laser_mapping ${catkin_EXPORTED_TARGETS} ${${PROJECT_NAME}_EXPORTED_TARGETS})
 add_dependencies(optimization ${catkin_EXPORTED_TARGETS})
 add_dependencies(health_monitor ${catkin_EXPORTED_TARGETS})
-add_dependencies(fastlivo_mapping ${catkin_EXPORTED_TARGETS})
+add_dependencies(fastlivo_mapping ${catkin_EXPORTED_TARGETS} ${${PROJECT_NAME}_EXPORTED_TARGETS})
 
 # Link libraries to the executable
 target_link_libraries(fastlivo_mapping
@@ -161,6 +166,7 @@ target_link_libraries(fastlivo_mapping
   online_backend
   health_monitor
   dynamic_filter
+  localization_safety
   ${catkin_LIBRARIES}
   ${PCL_LIBRARIES}
   ${OpenCV_LIBRARIES}
@@ -182,9 +188,24 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(optimization PRIVATE -fno-fast-math)
   target_compile_options(online_backend PRIVATE -fno-fast-math)
   target_compile_options(dynamic_filter PRIVATE -fno-fast-math)
+  target_compile_options(localization_safety PRIVATE -fno-fast-math)
 endif()
 
 if(CATKIN_ENABLE_TESTING)
+  catkin_add_gtest(resource_limits_test test/resource_limits_test.cpp)
+  if(TARGET resource_limits_test)
+    target_link_libraries(resource_limits_test lio vio ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenCV_LIBRARIES} ${Sophus_LIBRARIES})
+    if(OpenMP_CXX_FOUND)
+      target_link_libraries(resource_limits_test OpenMP::OpenMP_CXX)
+    endif()
+  endif()
+  catkin_add_gtest(localization_safety_test test/localization_safety_test.cpp)
+  if(TARGET localization_safety_test)
+    target_link_libraries(localization_safety_test localization_safety ${catkin_LIBRARIES} ${PCL_LIBRARIES})
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+      target_compile_options(localization_safety_test PRIVATE -fno-fast-math)
+    endif()
+  endif()
   catkin_add_gtest(dynamic_filter_test test/dynamic_filter_test.cpp)
   if(TARGET dynamic_filter_test)
     add_dependencies(dynamic_filter_test ${catkin_EXPORTED_TARGETS})
@@ -222,7 +243,7 @@ if(CATKIN_ENABLE_TESTING)
   endif()
   catkin_add_gtest(online_backend_test test/online_backend_test.cpp)
   if(TARGET online_backend_test)
-    add_dependencies(online_backend_test ${catkin_EXPORTED_TARGETS})
+    add_dependencies(online_backend_test ${catkin_EXPORTED_TARGETS} ${${PROJECT_NAME}_EXPORTED_TARGETS})
     target_link_libraries(online_backend_test online_backend)
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
       target_compile_options(online_backend_test PRIVATE -fno-fast-math)

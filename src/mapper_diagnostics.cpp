@@ -13,6 +13,7 @@ bool LIVMapper::checkInput(health::Sensor sensor, double time, bool finite, bool
     ++input_monitor.inputs[static_cast<int>(sensor)].rejected;
     return false;
   }
+  if (safety_machine && sensor == health::Sensor::IMU && saturated) return false;
   return true;
 }
 
@@ -45,6 +46,7 @@ void LIVMapper::collectFrontendQuality()
     voxelmap_manager->state_ = state_propagat;
     last_quality.pose_covariance = _state.cov.block<6, 6>(0, 0);
   }
+  assessSafety();
   if (frontend_quality_file.is_open()) {
     frontend_quality_file << std::setprecision(17) << LidarMeasures.last_lio_update_time << ","
       << health::name(frontend_monitor.health.state) << "," << frontend_monitor.reason << ","
@@ -104,6 +106,7 @@ void LIVMapper::diagnosticsCallback(const ros::WallTimerEvent&)
       status.queue_age = std::max(status.queue_age, std::max(0.0, now - prop_imu_buffer.front().header.stamp.toSec()));
   }
   input_monitor.poll(now);
+  publishSafety(now);
   const auto& gps_input = input_monitor.inputs[3];
   if (gps_input.seen) gnss_monitor.last.age = now - gps_input.last_time;
   if (gps_enabled && gps_input.flags & (health::MISSING | health::DELAYED | health::FUTURE))
@@ -191,6 +194,26 @@ void LIVMapper::diagnosticsCallback(const ros::WallTimerEvent&)
       filter.message = "HISTORY_CAPACITY_REACHED";
     }
     message.status.push_back(filter);
+  }
+  if (resource_config.enabled) {
+    auto resource = make("resources", resource_archive_failed ? health::State::DEGRADED : health::State::NORMAL,
+        resource_archive_failed ? "ARCHIVE_FAILED" : "OK");
+    value(resource, "map_roots", voxelmap_manager->voxel_map_.size());
+    value(resource, "map_root_limit", resource_config.map_roots);
+    value(resource, "map_rejected_points", voxelmap_manager->resource_rejected_points);
+    value(resource, "visual_points", vio_manager->resource_point_count);
+    value(resource, "path_poses", path.poses.size());
+    value(resource, "imu_dropped", resource_dropped[0]);
+    value(resource, "lidar_dropped", resource_dropped[1]);
+    value(resource, "camera_dropped", resource_dropped[2]);
+    value(resource, "pcd_chunks", resource_pcd_chunks);
+    value(resource, "pcd_rejected_points", resource_pcd_rejected);
+    if (!resource_archive_failed && (resource_dropped[0] || resource_dropped[1] || resource_dropped[2] ||
+        voxelmap_manager->resource_rejected_points)) {
+      resource.level = diagnostic_msgs::DiagnosticStatus::WARN;
+      resource.message = "CAPACITY_REACHED";
+    }
+    message.status.push_back(resource);
   }
   diagnostics_pub.publish(message);
   for (const auto& item : message.status) {

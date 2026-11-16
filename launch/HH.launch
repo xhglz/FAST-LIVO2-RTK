@@ -5,6 +5,8 @@
 	<arg name="outputfilepath" default="$(find fast_livo)/output" />
 	<arg name="backend_mode" default="online" />
 	<arg name="dynamic_filter" default="false" />
+	<arg name="safety" default="false" />
+	<arg name="resources" default="false" />
 	<arg name="play_bag" default="true" />
 	<arg name="bag_file" default="/root/datasets/HH-LVGO-01_compressed.bag" />
 	<arg name="bag_rate" default="1.0" />
@@ -15,6 +17,10 @@
 	<rosparam command="load" file="$(find fast_livo)/config/online_backend.yaml" />
 	<rosparam command="load" file="$(find fast_livo)/config/dynamic_filter.yaml" />
 	<param name="dynamic_filter/enabled" value="$(arg dynamic_filter)" />
+	<rosparam command="load" file="$(find fast_livo)/config/localization_safety.yaml" />
+	<param name="safety/enabled" value="$(arg safety)" />
+	<rosparam command="load" file="$(find fast_livo)/config/resources.yaml" />
+	<param name="resources/enabled" value="$(arg resources)" />
 	<param name="backend/mode" value="$(arg backend_mode)" />
 	<param name="/use_sim_time" value="$(arg play_bag)" />
 

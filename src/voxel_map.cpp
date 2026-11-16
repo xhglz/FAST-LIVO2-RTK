@@ -60,7 +60,7 @@ void VoxelMapManager::rebuildRoots(const std::vector<V3D>& removed,
   for (const auto& p : removed) roots.insert(rootLocation(p, config_setting_.max_voxel_size_));
   for (const auto& root : roots) {
     auto it = voxel_map_.find(root);
-    if (it != voxel_map_.end()) { delete it->second; voxel_map_.erase(it); }
+    if (it != voxel_map_.end()) { delete it->second; voxel_map_.erase(it); ++map_revision_; }
   }
   std::vector<pointWithVar> rebuild;
   for (const auto& p : retained)
@@ -716,6 +716,11 @@ void VoxelMapManager::BuildVoxelMap()
     }
     VOXEL_LOCATION position((int64_t)loc_xyz[0], (int64_t)loc_xyz[1], (int64_t)loc_xyz[2]);
     auto iter = voxel_map_.find(position);
+    if (resource_max_roots && iter == voxel_map_.end() && voxel_map_.size() >= resource_max_roots) {
+      ++resource_rejected_points;
+      continue;
+    }
+    ++map_revision_;
     if (iter != voxel_map_.end())
     {
       voxel_map_[position]->temp_points_.push_back(p_v);
@@ -776,6 +781,11 @@ void VoxelMapManager::UpdateVoxelMap(const std::vector<pointWithVar> &input_poin
     }
     VOXEL_LOCATION position((int64_t)loc_xyz[0], (int64_t)loc_xyz[1], (int64_t)loc_xyz[2]);
     auto iter = voxel_map_.find(position);
+    if (resource_max_roots && iter == voxel_map_.end() && voxel_map_.size() >= resource_max_roots) {
+      ++resource_rejected_points;
+      continue;
+    }
+    ++map_revision_;
     if (iter != voxel_map_.end()) { voxel_map_[position]->UpdateOctoTree(p_v); }
     else
     {
