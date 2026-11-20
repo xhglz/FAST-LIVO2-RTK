@@ -8,27 +8,33 @@ RTK → 质量筛选 → 增量全局后端 → map→odom
 ```
 - 整理时间、坐标与数据接口。
 - 数据异常检测，如异常位姿、异常速度等。
-- 动态过滤。
+- 基于滤波的动态过滤。
 - 增量全局后端。
+- [todo] 激光靠谱就少用相机省算力；激光不行，使用相机保稳定。
+- [todo] 重新设计地图存储结构，大幅省内存。局部地图（激光几何信息 + 相机图像信息） + 长期稀疏视觉地图。
+- [todo] 子地图，用于大规模建图。
+- [todo] 加入语义，用于动态滤波和构建语义地图。
+- [todo] 加入 wheel。
+
+
 
 ## M3DGR
 - 测试鲁棒性
 - LVIO-RTK，没有 wheel
 
-图片在各组表格下方以 360 像素宽度显示，点击图片可查看原图。
+图片在各组表格下方按每行 3 张排列，点击图片可查看原图。
 
 |Sequence Name|indoor/outdoor|Features|Challenge|TEST|
 |--|--|--|--|--|
 |Outdoor01|Outdoor|Standard|None|✅|
 |Outdoor04|Outdoor|Standard|None|✅|
 
-**Outdoor01**
-
-[<img src="doc/m3dgr_outdoor01.png" width="360" alt="Outdoor01">](doc/m3dgr_outdoor01.png)
-
-**Outdoor04**
-
-[<img src="doc/m3dgr_outdoor04.png" width="360" alt="Outdoor04">](doc/m3dgr_outdoor04.png)
+<table>
+  <tr>
+    <td align="center"><b>Outdoor01</b><br><a href="doc/m3dgr_outdoor01.png"><img src="doc/m3dgr_outdoor01.png" width="260" alt="Outdoor01"></a></td>
+    <td align="center"><b>Outdoor04</b><br><a href="doc/m3dgr_outdoor04.png"><img src="doc/m3dgr_outdoor04.png" width="260" alt="Outdoor04"></a></td>
+  </tr>
+</table>
 
 |Sequence Name|indoor/outdoor|Features|Challenge|TEST|
 |--|--|--|--|--|
@@ -45,55 +51,31 @@ RTK → 质量筛选 → 增量全局后端 → map→odom
 |Varying-illu01|Indoor|Varying Illumination|Visual Challenge|✅|
 |Varying-illu02|Indoor|Varying Illumination|Visual Challenge|✅|
 
-**Dark01**
-
-[<img src="doc/m3dgr_visual_Dark01.png" width="360" alt="Dark01">](doc/m3dgr_visual_Dark01.png)
-
-**Dark02**
-
-[<img src="doc/m3dgr_visual_Dark02.png" width="360" alt="Dark02">](doc/m3dgr_visual_Dark02.png)
-
-**Dark03**
-
-[<img src="doc/m3dgr_visual_Dark03.png" width="360" alt="Dark03">](doc/m3dgr_visual_Dark03.png)
-
-**Dark04**
-
-[<img src="doc/m3dgr_visual_Dark04.png" width="360" alt="Dark04">](doc/m3dgr_visual_Dark04.png)
-
-**Dynamic01**
-
-[<img src="doc/m3dgr_visual_Dynamic01.png" width="360" alt="Dynamic01">](doc/m3dgr_visual_Dynamic01.png)
-
-**Dynamic02**
-
-[<img src="doc/m3dgr_visual_Dynamic02.png" width="360" alt="Dynamic02">](doc/m3dgr_visual_Dynamic02.png)
-
-**Dynamic03**
-
-[<img src="doc/m3dgr_visual_Dynamic03.png" width="360" alt="Dynamic03">](doc/m3dgr_visual_Dynamic03.png)
-
-**Dynamic04**
-
-[<img src="doc/m3dgr_visual_Dynamic04_01.png" width="360" alt="Dynamic04 视图 1">](doc/m3dgr_visual_Dynamic04_01.png)
-
-[<img src="doc/m3dgr_visual_Dynamic04.png" width="360" alt="Dynamic04 视图 2">](doc/m3dgr_visual_Dynamic04.png)
-
-**Occlusion01**
-
-[<img src="doc/m3dgr_visual_Occlusion01.png" width="360" alt="Occlusion01">](doc/m3dgr_visual_Occlusion01.png)
-
-**Occlusion02**
-
-[<img src="doc/m3dgr_visual_Occlusion02.png" width="360" alt="Occlusion02">](doc/m3dgr_visual_Occlusion02.png)
-
-**Varying-illu01**
-
-[<img src="doc/m3dgr_visual_Varying-illu01.png" width="360" alt="Varying-illu01">](doc/m3dgr_visual_Varying-illu01.png)
-
-**Varying-illu02**
-
-[<img src="doc/m3dgr_visual_Varying-illu02.png" width="360" alt="Varying-illu02">](doc/m3dgr_visual_Varying-illu02.png)
+<table>
+  <tr>
+    <td align="center"><b>Dark01</b><br><a href="doc/m3dgr_visual_Dark01.png"><img src="doc/m3dgr_visual_Dark01.png" width="260" alt="Dark01"></a></td>
+    <td align="center"><b>Dark02</b><br><a href="doc/m3dgr_visual_Dark02.png"><img src="doc/m3dgr_visual_Dark02.png" width="260" alt="Dark02"></a></td>
+    <td align="center"><b>Dark03</b><br><a href="doc/m3dgr_visual_Dark03.png"><img src="doc/m3dgr_visual_Dark03.png" width="260" alt="Dark03"></a></td>
+  </tr>
+  <tr>
+    <td align="center"><b>Dark04</b><br><a href="doc/m3dgr_visual_Dark04.png"><img src="doc/m3dgr_visual_Dark04.png" width="260" alt="Dark04"></a></td>
+    <td align="center"><b>Dynamic01</b><br><a href="doc/m3dgr_visual_Dynamic01.png"><img src="doc/m3dgr_visual_Dynamic01.png" width="260" alt="Dynamic01"></a></td>
+    <td align="center"><b>Dynamic02</b><br><a href="doc/m3dgr_visual_Dynamic02.png"><img src="doc/m3dgr_visual_Dynamic02.png" width="260" alt="Dynamic02"></a></td>
+  </tr>
+  <tr>
+    <td align="center"><b>Dynamic03</b><br><a href="doc/m3dgr_visual_Dynamic03.png"><img src="doc/m3dgr_visual_Dynamic03.png" width="260" alt="Dynamic03"></a></td>
+    <td align="center"><b>Dynamic04 视图 1</b><br><a href="doc/m3dgr_visual_Dynamic04_01.png"><img src="doc/m3dgr_visual_Dynamic04_01.png" width="260" alt="Dynamic04 视图 1"></a></td>
+    <td align="center"><b>Dynamic04 视图 2</b><br><a href="doc/m3dgr_visual_Dynamic04.png"><img src="doc/m3dgr_visual_Dynamic04.png" width="260" alt="Dynamic04 视图 2"></a></td>
+  </tr>
+  <tr>
+    <td align="center"><b>Occlusion01</b><br><a href="doc/m3dgr_visual_Occlusion01.png"><img src="doc/m3dgr_visual_Occlusion01.png" width="260" alt="Occlusion01"></a></td>
+    <td align="center"><b>Occlusion02</b><br><a href="doc/m3dgr_visual_Occlusion02.png"><img src="doc/m3dgr_visual_Occlusion02.png" width="260" alt="Occlusion02"></a></td>
+    <td align="center"><b>Varying-illu01</b><br><a href="doc/m3dgr_visual_Varying-illu01.png"><img src="doc/m3dgr_visual_Varying-illu01.png" width="260" alt="Varying-illu01"></a></td>
+  </tr>
+  <tr>
+    <td align="center"><b>Varying-illu02</b><br><a href="doc/m3dgr_visual_Varying-illu02.png"><img src="doc/m3dgr_visual_Varying-illu02.png" width="260" alt="Varying-illu02"></a></td>
+  </tr>
+</table>
 
 |Sequence Name|indoor/outdoor|Features|Challenge|TEST|
 |--|--|--|--|--|
@@ -105,33 +87,21 @@ RTK → 质量筛选 → 增量全局后端 → map→odom
 |Wheel-float02|Indoor|Wheel Float|Wheel Challenge|✅|
 |Z-Rough-Road01|Outdoor|Rough Road|Wheel Challenge|✅|
 
-**Grass01**
-
-[<img src="doc/m3dgr_wheel_Grass01.png" width="360" alt="Grass01">](doc/m3dgr_wheel_Grass01.png)
-
-**Grass02**
-
-[<img src="doc/m3dgr_wheel_Grass02.png" width="360" alt="Grass02">](doc/m3dgr_wheel_Grass02.png)
-
-**Sha-turn01**
-
-[<img src="doc/m3dgr_wheel_sha_turn01.png" width="360" alt="Sha-turn01">](doc/m3dgr_wheel_sha_turn01.png)
-
-**Sha-turn02**
-
-[<img src="doc/m3dgr_wheel_sha_turn02.png" width="360" alt="Sha-turn02">](doc/m3dgr_wheel_sha_turn02.png)
-
-**Wheel-float01**
-
-[<img src="doc/m3dgr_wheel_wheel_float01.png" width="360" alt="Wheel-float01">](doc/m3dgr_wheel_wheel_float01.png)
-
-**Wheel-float02**
-
-[<img src="doc/m3dgr_wheel_wheel_float02.png" width="360" alt="Wheel-float02">](doc/m3dgr_wheel_wheel_float02.png)
-
-**Z-Rough-Road01**
-
-[<img src="doc/m3dgr_wheel_Z.png" width="360" alt="Z-Rough-Road01">](doc/m3dgr_wheel_Z.png)
+<table>
+  <tr>
+    <td align="center"><b>Grass01</b><br><a href="doc/m3dgr_wheel_Grass01.png"><img src="doc/m3dgr_wheel_Grass01.png" width="260" alt="Grass01"></a></td>
+    <td align="center"><b>Grass02</b><br><a href="doc/m3dgr_wheel_Grass02.png"><img src="doc/m3dgr_wheel_Grass02.png" width="260" alt="Grass02"></a></td>
+    <td align="center"><b>Sha-turn01</b><br><a href="doc/m3dgr_wheel_sha_turn01.png"><img src="doc/m3dgr_wheel_sha_turn01.png" width="260" alt="Sha-turn01"></a></td>
+  </tr>
+  <tr>
+    <td align="center"><b>Sha-turn02</b><br><a href="doc/m3dgr_wheel_sha_turn02.png"><img src="doc/m3dgr_wheel_sha_turn02.png" width="260" alt="Sha-turn02"></a></td>
+    <td align="center"><b>Wheel-float01</b><br><a href="doc/m3dgr_wheel_wheel_float01.png"><img src="doc/m3dgr_wheel_wheel_float01.png" width="260" alt="Wheel-float01"></a></td>
+    <td align="center"><b>Wheel-float02</b><br><a href="doc/m3dgr_wheel_wheel_float02.png"><img src="doc/m3dgr_wheel_wheel_float02.png" width="260" alt="Wheel-float02"></a></td>
+  </tr>
+  <tr>
+    <td align="center"><b>Z-Rough-Road01</b><br><a href="doc/m3dgr_wheel_Z.png"><img src="doc/m3dgr_wheel_Z.png" width="260" alt="Z-Rough-Road01"></a></td>
+  </tr>
+</table>
 
 |Sequence Name|indoor/outdoor|Features|Challenge|TEST|
 |--|--|--|--|--|
@@ -151,13 +121,12 @@ RTK → 质量筛选 → 增量全局后端 → map→odom
 |GNSS-denial01|outdoor|GNSS Denial|GNSS Challenge|✅|
 |GNSS-denial02|outdoor|GNSS Denial|GNSS Challenge|✅|
 
-**GNSS-denial01**
-
-[<img src="doc/m3dgr_gnss_denial01.png" width="360" alt="GNSS-denial01">](doc/m3dgr_gnss_denial01.png)
-
-**GNSS-denial02**
-
-[<img src="doc/m3dgr_gnss_denial02.png" width="360" alt="GNSS-denial02">](doc/m3dgr_gnss_denial02.png)
+<table>
+  <tr>
+    <td align="center"><b>GNSS-denial01</b><br><a href="doc/m3dgr_gnss_denial01.png"><img src="doc/m3dgr_gnss_denial01.png" width="260" alt="GNSS-denial01"></a></td>
+    <td align="center"><b>GNSS-denial02</b><br><a href="doc/m3dgr_gnss_denial02.png"><img src="doc/m3dgr_gnss_denial02.png" width="260" alt="GNSS-denial02"></a></td>
+  </tr>
+</table>
 
 
 
